@@ -85,6 +85,11 @@ export class Flight {
 		this.lastImpact = 0;      // speed of the most recent wall hit, for audio
 		this.grounded = false;
 
+		// Weak panels block the player cell by cell, so a hole you made is a hole
+		// you can fly through and nothing else is. §31.3's aperture question
+		// becomes a physical fact rather than a reported one.
+		this.panels = [];
+
 		// Facing -Z on spawn: down the hall, into the haze and the piers, with the
 		// pool behind your shoulder. You should have to turn round to find it.
 		this.quaternion.identity();
@@ -371,6 +376,74 @@ export class Flight {
 			if ( ny > 0.7 ) this.grounded = true;
 
 		}
+
+		this._resolvePanels( r );
+
+	}
+
+	// Panel collision, resolved against the open-cell grid rather than the slab.
+	// An intact panel is solid; a breached one is solid everywhere except where
+	// chunks have actually left, and the cells the player's radius spans must
+	// *all* be open — the same test `_hasAperture` runs at build time, so what
+	// the verifier proves and what the controls permit cannot drift apart.
+	_resolvePanels( r ) {
+
+		for ( let k = 0; k < this.panels.length; k ++ ) {
+
+			const p = this.panels[ k ];
+			const dx = this.position.x - p.center.x;
+			const dy = this.position.y - p.center.y;
+			const dz = this.position.z - p.center.z;
+
+			const dn = dx * p.normal.x + dy * p.normal.y + dz * p.normal.z;
+			const pen = p.halfN + r - Math.abs( dn );
+			if ( pen <= 0 ) continue;
+
+			const du = dx * p.axisU.x + dy * p.axisU.y + dz * p.axisU.z;
+			const dv = dx * p.axisV.x + dy * p.axisV.y + dz * p.axisV.z;
+			if ( Math.abs( du ) > p.halfU + r || Math.abs( dv ) > p.halfV + r ) continue;
+
+			if ( p.activated && this._cellsOpen( p, du, dv, r ) ) continue;
+
+			const s = dn >= 0 ? 1 : - 1;
+			this.position.x += p.normal.x * s * pen;
+			this.position.y += p.normal.y * s * pen;
+			this.position.z += p.normal.z * s * pen;
+
+			const into = ( this.velocity.x * p.normal.x + this.velocity.y * p.normal.y +
+				this.velocity.z * p.normal.z ) * s;
+
+			if ( into < 0 ) {
+
+				this.lastImpact = Math.max( this.lastImpact, - into );
+				this.velocity.x -= p.normal.x * s * into;
+				this.velocity.y -= p.normal.y * s * into;
+				this.velocity.z -= p.normal.z * s * into;
+
+			}
+
+		}
+
+	}
+
+	_cellsOpen( p, du, dv, r ) {
+
+		const c0 = Math.max( 0, Math.floor( ( du - r + p.halfU ) / ( p.cellU * 2 ) ) );
+		const c1 = Math.min( p.cols - 1, Math.floor( ( du + r + p.halfU ) / ( p.cellU * 2 ) ) );
+		const r0 = Math.max( 0, Math.floor( ( dv - r + p.halfV ) / ( p.cellV * 2 ) ) );
+		const r1 = Math.min( p.rows - 1, Math.floor( ( dv + r + p.halfV ) / ( p.cellV * 2 ) ) );
+
+		for ( let rr = r0; rr <= r1; rr ++ ) {
+
+			for ( let cc = c0; cc <= c1; cc ++ ) {
+
+				if ( p.open[ rr * p.cols + cc ] === 0 ) return false;
+
+			}
+
+		}
+
+		return true;
 
 	}
 

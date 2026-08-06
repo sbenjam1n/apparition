@@ -25,6 +25,65 @@ import * as THREE from 'three';
 
 export const MAX_STRIPS = 8;
 export const MAX_PRACTICALS = 6;
+export const MAX_SHOCKS = 3;
+
+// The fourth visual register: world-space geometry displacement.
+//
+// §48.3 establishes three strictly separated registers — the §21 baseline, §44's
+// erasure (signal integrity failing: chroma, dropout, wrong colour), and §48's
+// low-power perception (resolution failing: sparse sampling, monochrome, point
+// cloud). Nothing was claiming *shape*, and that turns out to be useful: a
+// shockwave rolling through a wall and a room that has started breathing are both
+// expressible here without touching a single one of the other three.
+//
+// Strictly geometry. No colour, no chroma, no opacity. Chroma in particular is
+// reserved absolutely for erasure (§44.9) and a generic "hallucination" uniform
+// that also shifted hue would collide with it head-on — the mechanism is worth
+// taking, the default look is not.
+export const DISPLACE_GLSL = /* glsl */`
+	#define MAX_SHOCKS ${MAX_SHOCKS}
+
+	uniform vec3  uShockOrigin[ MAX_SHOCKS ];
+	uniform float uShockRadius[ MAX_SHOCKS ];
+	uniform float uShockPower[ MAX_SHOCKS ];
+	uniform float uShockThickness;
+	uniform float uWarpAmount;
+	uniform float uWarpScale;
+	uniform float uTime;
+
+	vec3 displace( vec3 wp ) {
+
+		vec3 d = vec3( 0.0 );
+
+		for ( int i = 0; i < MAX_SHOCKS; i ++ ) {
+
+			if ( uShockPower[ i ] <= 0.0 ) continue;
+
+			vec3 v = wp - uShockOrigin[ i ];
+			float dist = length( v );
+			float phase = ( dist - uShockRadius[ i ] ) / uShockThickness;
+			if ( phase < - 1.0 || phase > 1.0 ) continue;
+
+			// Push then pull, tapered at both ends — a wave passing through,
+			// not a bubble expanding.
+			float env = cos( phase * 1.5707963 );
+			float push = sin( phase * 3.14159265 ) * env * env;
+			d += normalize( v + vec3( 1e-5 ) ) * push * uShockPower[ i ];
+
+		}
+
+		if ( uWarpAmount > 0.0 ) {
+
+			d.x += sin( wp.y * uWarpScale + uTime * 1.7 ) * uWarpAmount;
+			d.y += cos( wp.x * uWarpScale + uTime * 1.3 ) * uWarpAmount;
+			d.z += sin( ( wp.x + wp.y ) * uWarpScale + uTime * 1.1 ) * uWarpAmount;
+
+		}
+
+		return d;
+
+	}
+`;
 
 export const LIGHT_GLSL = /* glsl */`
 	#define MAX_STRIPS ${MAX_STRIPS}
@@ -251,6 +310,16 @@ export class LightRig {
 
 		}
 
+		const shockOrigin = [], shockRadius = [], shockPower = [];
+
+		for ( let i = 0; i < MAX_SHOCKS; i ++ ) {
+
+			shockOrigin.push( new THREE.Vector3() );
+			shockRadius.push( 0 );
+			shockPower.push( 0 );
+
+		}
+
 		this.uniforms = {
 			uStripA: { value: stripA },
 			uStripB: { value: stripB },
@@ -283,8 +352,26 @@ export class LightRig {
 			uPoolBounds: { value: new THREE.Vector4( - 1, - 1, 1, 1 ) },
 			uTime: { value: 0 },
 
-			uCamPos: { value: new THREE.Vector3() }
+			uCamPos: { value: new THREE.Vector3() },
+
+			// Fourth register — shape only.
+			uShockOrigin: { value: shockOrigin },
+			uShockRadius: { value: shockRadius },
+			uShockPower: { value: shockPower },
+			uShockThickness: { value: 1.6 },
+			uWarpAmount: { value: 0 },
+			uWarpScale: { value: 0.55 }
 		};
+
+		this.shocks = [];
+
+		for ( let i = 0; i < MAX_SHOCKS; i ++ ) {
+
+			this.shocks.push( { power: 0, peak: 0, radius: 0, speed: 9, range: 22 } );
+
+		}
+
+		this._shockCursor = 0;
 
 		// Authored fixtures. Each one owns its rating so overvolting has a real
 		// threshold to cross rather than an arbitrary number (§35.2).
@@ -363,6 +450,22 @@ export class LightRig {
 
 	}
 
+	// Kick off a displacement wave. Slots are recycled round-robin; a fourth
+	// concurrent shockwave overwrites the oldest, which is correct — by then you
+	// cannot read them apart anyway.
+	shockwave( x, y, z, power = 0.14, speed = 9, range = 22 ) {
+
+		const i = this._shockCursor;
+		this._shockCursor = ( this._shockCursor + 1 ) % MAX_SHOCKS;
+
+		const s = this.shocks[ i ];
+		s.power = power; s.peak = power; s.radius = 0; s.speed = speed; s.range = range;
+		this.uniforms.uShockOrigin.value[ i ].set( x, y, z );
+		this.uniforms.uShockRadius.value[ i ] = 0;
+		this.uniforms.uShockPower.value[ i ] = power;
+
+	}
+
 	pulse( fixture, amount = 0.4, decay = 6 ) {
 
 		if ( fixture.dead ) return;
@@ -376,6 +479,23 @@ export class LightRig {
 		this.uniforms.uCamPos.value.copy( camPos );
 
 		const u = this.uniforms;
+
+		for ( let i = 0; i < MAX_SHOCKS; i ++ ) {
+
+			const s = this.shocks[ i ];
+			if ( s.power <= 0 ) continue;
+
+			s.radius += s.speed * dt;
+			// Amplitude falls with the front's own expansion, so a wave thins out
+			// rather than being switched off on a timer.
+			s.power = s.peak * Math.max( 0, 1 - s.radius / s.range );
+
+			u.uShockRadius.value[ i ] = s.radius;
+			u.uShockPower.value[ i ] = s.power;
+
+			if ( s.radius > s.range ) { s.power = 0; u.uShockPower.value[ i ] = 0; }
+
+		}
 
 		for ( let i = 0; i < this.strips.length && i < MAX_STRIPS; i ++ ) {
 

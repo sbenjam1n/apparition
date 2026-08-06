@@ -146,6 +146,81 @@ export class AVBDSolver {
 		this.anchorZ = new Float32Array( slots / ROWS );
 		this.anchorLive = new Uint8Array( slots / ROWS );
 
+		// --- joints ----------------------------------------------------------
+		//
+		// Six-row welds: three linear rows holding a pair of anchor points
+		// coincident, three angular rows holding a relative orientation. Both
+		// bilateral (unbounded force) and both hard, so they run on the lambda
+		// path rather than the penalty path.
+		//
+		// Fracture triggers on |lambda|, not on stretch. That distinction is the
+		// whole reason this is worth doing: lambda IS the force carried by the
+		// constraint, in newtons, so "this joint shears at 3kN" survives every
+		// change to stiffness, iteration count and timestep. A stretch threshold
+		// has to be re-tuned every time any of those move.
+		const J = this.maxJoints = 768;
+		this.jointCount = 0;
+		this.jA = new Int32Array( J );
+		this.jB = new Int32Array( J );          // -1 = anchored to the static world
+		this.jax = new Float32Array( J ); this.jay = new Float32Array( J ); this.jaz = new Float32Array( J );
+		this.jbx = new Float32Array( J ); this.jby = new Float32Array( J ); this.jbz = new Float32Array( J );
+		// Target orientation for A: (dynamic) qB * conj(qRel), (static) a constant.
+		this.jrx = new Float32Array( J ); this.jry = new Float32Array( J );
+		this.jrz = new Float32Array( J ); this.jrw = new Float32Array( J );
+		this.jLambda = new Float32Array( J * 6 );
+		this.jPenalty = new Float32Array( J * 6 );
+		this.jC = new Float32Array( J * 6 );
+		this.jRax = new Float32Array( J ); this.jRay = new Float32Array( J ); this.jRaz = new Float32Array( J );
+		this.jRbx = new Float32Array( J ); this.jRby = new Float32Array( J ); this.jRbz = new Float32Array( J );
+		this.jBreakForce = new Float32Array( J );
+		this.jBreakTorque = new Float32Array( J );
+		// Yield is the fraction of the break load past which damage accumulates.
+		// Below yield a joint is elastic forever; above it, it creeps and then
+		// lets go later — which is what makes a panel sag before it drops.
+		this.jYield = new Float32Array( J );
+		this.jDamage = new Float32Array( J );
+		// Fracture reads a short moving average of |lambda|, not its instantaneous
+		// value. A freshly built lattice takes a second or two to converge and
+		// lambda overshoots badly while it does — measured at ~8kN peak against a
+		// ~1kN steady state on a 42-chunk panel. Testing the raw value fractures a
+		// wall for standing still. A real impact is an order of magnitude larger
+		// again and survives the filter intact, so this discriminates convergence
+		// noise from load without blunting anything that matters.
+		this.jLoadF = new Float32Array( J );
+		this.jLoadT = new Float32Array( J );
+		// And a grace window on new joints, so the initial settle is never read.
+		this.jSettle = new Float32Array( J );
+		this.jGroup = new Int32Array( J );      // owner id, for connectivity queries
+		this.jState = new Uint8Array( J );      // 0 = free, 1 = intact, 2 = broken
+		this.jointFreeList = [];
+
+		for ( let i = J - 1; i >= 0; i -- ) this.jointFreeList.push( i );
+
+		this.bodyJointStart = new Int32Array( N + 1 );
+		this.bodyJointList = new Int32Array( J * 2 );
+
+		// Bodies that share a joint must not also generate contacts against each
+		// other. The weld already fixes their relative position, so a contact is
+		// redundant — and worse, the contact pushes them apart while the weld
+		// pulls them together, which spikes lambda and tears a lattice apart under
+		// its own weight. The AVBD reference has the same guard (`constrainedTo`).
+		// Counted, because a pair can be welded more than once, and it lapses the
+		// moment the last weld goes so broken chunks start pressing properly.
+		this.jointPairs = new Map();
+
+		this.creepRate = 0.55;     // damage per second at twice yield load
+		// A weld seeded at PENALTY_MIN is effectively soft for its first few dozen
+		// steps, so a fresh lattice sags and lambda overshoots for seconds while
+		// the ramp catches up. Seeding the penalty high instead means the
+		// constraint is enforced from step one and there is no settle transient to
+		// filter out — which matters because the transient is *slow* and an impact
+		// is two frames, so no low-pass can separate them. Fix the cause.
+		this.jointPenaltyInit = 1e5;
+		this.jointBeta = 2e6;
+		this.loadFilter = 0.035;   // just enough to reject single-frame numerics
+		this.jointSettleTime = 0.35;
+		this.onFracture = null;    // ( jointIndex, force, x, y, z, group ) => void
+
 		// Static world.
 		this.planes = [];  // { nx, ny, nz, d, friction, material } valid where n.x >= d
 		this.boxes = [];   // { cx, cy, cz, hx, hy, hz, friction, material } solid, keep out
@@ -169,6 +244,12 @@ export class AVBDSolver {
 		this.sleepAngular = 0.5;
 		this.sleepTime = 0.5;   // §23.6: correct behaviour for roughly 500ms
 		this.maxAngular = 40.0;
+		// A substep must not carry anything further than the thinnest thing it can
+		// hit. Panels are 0.28m, so 0.14 leaves a factor of two and costs half as
+		// much as being paranoid about it.
+		this.maxTravel = 0.14;
+		this.maxSubsteps = 3;
+		this._maxRadius = 0.1;
 
 		this._a = new Float32Array( 6 );
 		this._b = new Float32Array( 6 );
@@ -176,7 +257,7 @@ export class AVBDSolver {
 		this._out2 = new Float32Array( 3 );
 
 		this.onImpact = null;   // ( bodyIndex, speed, x, y, z, material ) => void
-		this.stats = { active: 0, asleep: 0, contacts: 0 };
+		this.stats = { active: 0, asleep: 0, contacts: 0, substeps: 1 };
 
 	}
 
@@ -262,6 +343,7 @@ export class AVBDSolver {
 		this.inertia[ i ] = I;
 		this.invInertia[ i ] = 1 / I;
 		this.radius[ i ] = Math.sqrt( hx * hx + hy * hy + hz * hz );
+		if ( this.radius[ i ] > this._maxRadius ) this._maxRadius = this.radius[ i ];
 		this.friction[ i ] = 0.55;
 		this.material[ i ] = material;
 		this.state[ i ] = 1;
@@ -326,15 +408,367 @@ export class AVBDSolver {
 
 	}
 
+	// --- joints -------------------------------------------------------------
+
+	// Rotate a world offset into body i's local frame.
+	_toLocal( i, wx, wy, wz, out ) {
+
+		const dx = wx - this.px[ i ], dy = wy - this.py[ i ], dz = wz - this.pz[ i ];
+		const qx = - this.qx[ i ], qy = - this.qy[ i ], qz = - this.qz[ i ], qw = this.qw[ i ];
+		const tx = 2 * ( qy * dz - qz * dy );
+		const ty = 2 * ( qz * dx - qx * dz );
+		const tz = 2 * ( qx * dy - qy * dx );
+		out[ 0 ] = dx + qw * tx + qy * tz - qz * ty;
+		out[ 1 ] = dy + qw * ty + qz * tx - qx * tz;
+		out[ 2 ] = dz + qw * tz + qx * ty - qy * tx;
+
+	}
+
+	// Weld body a to body b (or to the world, b = -1) at a world point. The rest
+	// state is whatever the two bodies are in right now, so panels are authored by
+	// placing chunks and then jointing them where they touch.
+	addJoint( a, b, wx, wy, wz, breakForce, breakTorque, yieldFraction = 0.55, group = - 1 ) {
+
+		if ( this.jointFreeList.length === 0 ) return - 1;
+		if ( this.state[ a ] === 0 ) return - 1;
+		if ( b >= 0 && this.state[ b ] === 0 ) return - 1;
+
+		const j = this.jointFreeList.pop();
+		const t = this._out;
+
+		this._toLocal( a, wx, wy, wz, t );
+		this.jax[ j ] = t[ 0 ]; this.jay[ j ] = t[ 1 ]; this.jaz[ j ] = t[ 2 ];
+
+		if ( b >= 0 ) {
+
+			this._toLocal( b, wx, wy, wz, t );
+			this.jbx[ j ] = t[ 0 ]; this.jby[ j ] = t[ 1 ]; this.jbz[ j ] = t[ 2 ];
+
+			// qRel = conj(qA) * qB, so the target for A is qB * conj(qRel).
+			const ax = - this.qx[ a ], ay = - this.qy[ a ], az = - this.qz[ a ], aw = this.qw[ a ];
+			const bx = this.qx[ b ], by = this.qy[ b ], bz = this.qz[ b ], bw = this.qw[ b ];
+			this.jrx[ j ] = aw * bx + ax * bw + ay * bz - az * by;
+			this.jry[ j ] = aw * by - ax * bz + ay * bw + az * bx;
+			this.jrz[ j ] = aw * bz + ax * by - ay * bx + az * bw;
+			this.jrw[ j ] = aw * bw - ax * bx - ay * by - az * bz;
+
+		} else {
+
+			// World anchor and a fixed absolute rest orientation.
+			this.jbx[ j ] = wx; this.jby[ j ] = wy; this.jbz[ j ] = wz;
+			this.jrx[ j ] = this.qx[ a ]; this.jry[ j ] = this.qy[ a ];
+			this.jrz[ j ] = this.qz[ a ]; this.jrw[ j ] = this.qw[ a ];
+
+		}
+
+		this.jA[ j ] = a;
+		this.jB[ j ] = b;
+		this.jBreakForce[ j ] = breakForce;
+		this.jBreakTorque[ j ] = breakTorque;
+		this.jYield[ j ] = yieldFraction;
+		this.jDamage[ j ] = 0;
+		this.jLoadF[ j ] = 0;
+		this.jLoadT[ j ] = 0;
+		this.jSettle[ j ] = this.jointSettleTime;
+		this.jGroup[ j ] = group;
+		this.jState[ j ] = 1;
+
+		for ( let r = 0; r < 6; r ++ ) { this.jLambda[ j * 6 + r ] = 0; this.jPenalty[ j * 6 + r ] = this.jointPenaltyInit; }
+
+		if ( b >= 0 ) {
+
+			const key = this._pairKey( a, b );
+			this.jointPairs.set( key, ( this.jointPairs.get( key ) || 0 ) + 1 );
+
+		}
+
+		if ( j >= this.jointCount ) this.jointCount = j + 1;
+		return j;
+
+	}
+
+	_pairKey( a, b ) {
+
+		return a < b ? a * 65536 + b : b * 65536 + a;
+
+	}
+
+	breakJoint( j ) {
+
+		if ( this.jState[ j ] !== 1 ) return;
+		this.jState[ j ] = 2;
+		this.jointFreeList.push( j );
+
+		const b = this.jB[ j ];
+
+		if ( b >= 0 ) {
+
+			const key = this._pairKey( this.jA[ j ], b );
+			const n = ( this.jointPairs.get( key ) || 1 ) - 1;
+			if ( n <= 0 ) this.jointPairs.delete( key );
+			else this.jointPairs.set( key, n );
+
+		}
+
+		// Wake both ends. A joint letting go redistributes load onto its
+		// neighbours, and a sleeping neighbour would swallow that silently.
+		this.wake( this.jA[ j ] );
+		if ( this.jB[ j ] >= 0 ) this.wake( this.jB[ j ] );
+
+	}
+
+	// Wake everything one joint-hop away. Cheap, and it is what makes load
+	// actually travel through a lattice instead of stopping at the impact.
+	wakeJointNeighbours( i ) {
+
+		for ( let j = 0; j < this.jointCount; j ++ ) {
+
+			if ( this.jState[ j ] !== 1 ) continue;
+			if ( this.jA[ j ] === i && this.jB[ j ] >= 0 ) this.wake( this.jB[ j ] );
+			else if ( this.jB[ j ] === i ) this.wake( this.jA[ j ] );
+
+		}
+
+	}
+
+	_buildJointAdjacency() {
+
+		const counts = this.bodyJointStart;
+		counts.fill( 0 );
+
+		for ( let j = 0; j < this.jointCount; j ++ ) {
+
+			if ( this.jState[ j ] !== 1 ) continue;
+
+			// A joint whose body was recycled is stale; retire it quietly.
+			if ( this.state[ this.jA[ j ] ] === 0 || ( this.jB[ j ] >= 0 && this.state[ this.jB[ j ] ] === 0 ) ) {
+
+				this.breakJoint( j );
+				continue;
+
+			}
+
+			counts[ this.jA[ j ] + 1 ] ++;
+			if ( this.jB[ j ] >= 0 ) counts[ this.jB[ j ] + 1 ] ++;
+
+		}
+
+		for ( let i = 0; i < this.maxBodies; i ++ ) counts[ i + 1 ] += counts[ i ];
+
+		const cursor = this._jcursor || ( this._jcursor = new Int32Array( this.maxBodies ) );
+		cursor.set( counts.subarray( 0, this.maxBodies ) );
+
+		for ( let j = 0; j < this.jointCount; j ++ ) {
+
+			if ( this.jState[ j ] !== 1 ) continue;
+			this.bodyJointList[ cursor[ this.jA[ j ] ] ++ ] = j;
+			if ( this.jB[ j ] >= 0 ) this.bodyJointList[ cursor[ this.jB[ j ] ] ++ ] = ~ j;
+
+		}
+
+	}
+
+	// Six constraint values plus the world lever arms, for the current primal state.
+	_evalJoint( j, alpha ) {
+
+		const a = this.jA[ j ], b = this.jB[ j ];
+		const base = j * 6;
+
+		// Linear: the two anchors should be coincident.
+		const t = this._jtmp || ( this._jtmp = new Float32Array( 6 ) );
+		this._rotate( a, this.jax[ j ], this.jay[ j ], this.jaz[ j ], t, 0 );
+		this.jRax[ j ] = t[ 0 ]; this.jRay[ j ] = t[ 1 ]; this.jRaz[ j ] = t[ 2 ];
+
+		const wax = this.px[ a ] + t[ 0 ], way = this.py[ a ] + t[ 1 ], waz = this.pz[ a ] + t[ 2 ];
+		let wbx, wby, wbz;
+		let tqx, tqy, tqz, tqw;
+
+		if ( b >= 0 ) {
+
+			this._rotate( b, this.jbx[ j ], this.jby[ j ], this.jbz[ j ], t, 3 );
+			this.jRbx[ j ] = t[ 3 ]; this.jRby[ j ] = t[ 4 ]; this.jRbz[ j ] = t[ 5 ];
+			wbx = this.px[ b ] + t[ 3 ]; wby = this.py[ b ] + t[ 4 ]; wbz = this.pz[ b ] + t[ 5 ];
+
+			// qTarget = qB * conj(qRel)
+			const bx = this.qx[ b ], by = this.qy[ b ], bz = this.qz[ b ], bw = this.qw[ b ];
+			const rx = - this.jrx[ j ], ry = - this.jry[ j ], rz = - this.jrz[ j ], rw = this.jrw[ j ];
+			tqx = bw * rx + bx * rw + by * rz - bz * ry;
+			tqy = bw * ry - bx * rz + by * rw + bz * rx;
+			tqz = bw * rz + bx * ry - by * rx + bz * rw;
+			tqw = bw * rw - bx * rx - by * ry - bz * rz;
+
+		} else {
+
+			wbx = this.jbx[ j ]; wby = this.jby[ j ]; wbz = this.jbz[ j ];
+			tqx = this.jrx[ j ]; tqy = this.jry[ j ]; tqz = this.jrz[ j ]; tqw = this.jrw[ j ];
+
+		}
+
+		this.jC[ base ] = ( wax - wbx ) * alpha;
+		this.jC[ base + 1 ] = ( way - wby ) * alpha;
+		this.jC[ base + 2 ] = ( waz - wbz ) * alpha;
+
+		// Angular: world-frame rotation vector from the target orientation to A's.
+		const ax = this.qx[ a ], ay = this.qy[ a ], az = this.qz[ a ], aw = this.qw[ a ];
+		const cx = - tqx, cy = - tqy, cz = - tqz, cw = tqw;
+		const ex = aw * cx + ax * cw + ay * cz - az * cy;
+		const ey = aw * cy - ax * cz + ay * cw + az * cx;
+		const ez = aw * cz + ax * cy - ay * cx + az * cw;
+		const ew = aw * cw - ax * cx - ay * cy - az * cz;
+		const s = ( ew < 0 ? - 2 : 2 ) * alpha;
+
+		this.jC[ base + 3 ] = ex * s;
+		this.jC[ base + 4 ] = ey * s;
+		this.jC[ base + 5 ] = ez * s;
+
+	}
+
+	// Rotate a local offset into world by body i's orientation, into out[off..off+2].
+	_rotate( i, lx, ly, lz, out, off ) {
+
+		const qx = this.qx[ i ], qy = this.qy[ i ], qz = this.qz[ i ], qw = this.qw[ i ];
+		const tx = 2 * ( qy * lz - qz * ly );
+		const ty = 2 * ( qz * lx - qx * lz );
+		const tz = 2 * ( qx * ly - qy * lx );
+		out[ off ] = lx + qw * tx + qy * tz - qz * ty;
+		out[ off + 1 ] = ly + qw * ty + qz * tx - qx * tz;
+		out[ off + 2 ] = lz + qw * tz + qx * ty - qy * tx;
+
+	}
+
+	_jointDualUpdate( alpha ) {
+
+		for ( let j = 0; j < this.jointCount; j ++ ) {
+
+			if ( this.jState[ j ] !== 1 ) continue;
+			this._evalJoint( j, alpha );
+
+			const base = j * 6;
+
+			for ( let r = 0; r < 6; r ++ ) {
+
+				const idx = base + r;
+				// Bilateral: no clamp, so lambda is free to take whatever force the
+				// weld is actually carrying — which is exactly what fracture reads.
+				this.jLambda[ idx ] = this.jPenalty[ idx ] * this.jC[ idx ] + this.jLambda[ idx ];
+				const p = this.jPenalty[ idx ] + this.jointBeta * Math.abs( this.jC[ idx ] );
+				this.jPenalty[ idx ] = p > PENALTY_MAX ? PENALTY_MAX : p;
+
+			}
+
+		}
+
+	}
+
+	// Fracture and creep, evaluated once per step on the converged multipliers
+	// rather than mid-sweep — a joint that dips over threshold during iteration 2
+	// and back under by iteration 6 was never actually overloaded.
+	_jointFracture( dt ) {
+
+		for ( let j = 0; j < this.jointCount; j ++ ) {
+
+			if ( this.jState[ j ] !== 1 ) continue;
+
+			const base = j * 6;
+			const fx = this.jLambda[ base ], fy = this.jLambda[ base + 1 ], fz = this.jLambda[ base + 2 ];
+			const tx = this.jLambda[ base + 3 ], ty = this.jLambda[ base + 4 ], tz = this.jLambda[ base + 5 ];
+
+			const rawF = Math.sqrt( fx * fx + fy * fy + fz * fz );
+			const rawT = Math.sqrt( tx * tx + ty * ty + tz * tz );
+
+			const k = Math.min( 1, dt / this.loadFilter );
+			this.jLoadF[ j ] += ( rawF - this.jLoadF[ j ] ) * k;
+			this.jLoadT[ j ] += ( rawT - this.jLoadT[ j ] ) * k;
+
+			if ( this.jSettle[ j ] > 0 ) { this.jSettle[ j ] -= dt; continue; }
+
+			const force = this.jLoadF[ j ];
+			const torque = this.jLoadT[ j ];
+
+			// Damage shrinks the effective break load, so a joint that has been
+			// worked stays weaker. Persistent under §7.5 for as long as it lives.
+			const capF = this.jBreakForce[ j ] * ( 1 - this.jDamage[ j ] );
+			const capT = this.jBreakTorque[ j ] * ( 1 - this.jDamage[ j ] );
+
+			if ( force >= capF || torque >= capT ) {
+
+				const a = this.jA[ j ];
+				const x = this.px[ a ] + this.jRax[ j ];
+				const y = this.py[ a ] + this.jRay[ j ];
+				const z = this.pz[ a ] + this.jRaz[ j ];
+				const group = this.jGroup[ j ];
+				this.breakJoint( j );
+				if ( this.onFracture ) this.onFracture( j, Math.max( force, torque * 4 ), x, y, z, group );
+				continue;
+
+			}
+
+			// Creep. Above yield the joint accumulates damage and will let go
+			// seconds later rather than at the moment of the hit — the delayed
+			// shred, and under dilation those seconds are a very long time.
+			const yF = capF * this.jYield[ j ];
+			const yT = capT * this.jYield[ j ];
+			const over = Math.max(
+				yF > 0 ? ( force - yF ) / yF : 0,
+				yT > 0 ? ( torque - yT ) / yT : 0
+			);
+
+			if ( over > 0 ) {
+
+				this.jDamage[ j ] = Math.min( 0.98, this.jDamage[ j ] + over * this.creepRate * dt );
+				this.wake( this.jA[ j ] );
+				if ( this.jB[ j ] >= 0 ) this.wake( this.jB[ j ] );
+
+			}
+
+		}
+
+	}
+
+	// Adaptive substepping.
+	//
+	// Contact generation is discrete: a body is tested where it is, not along the
+	// path it took. So anything travelling further than the thickness of what it
+	// hits passes clean through — at 60Hz, 20m/s is 0.33m per step against a 0.28m
+	// wall panel, and the wall may as well not be there. Since AVBD is cheap and
+	// unconditionally stable, the fix is to subdivide the step so nothing ever
+	// moves more than `maxTravel` at a time. Costs nothing at rest, because k is 1
+	// unless something is actually fast.
 	step( dt ) {
 
 		if ( dt <= 0 ) return;
+
+		let maxV = 0;
+
+		for ( let i = 0; i < this.count; i ++ ) {
+
+			if ( this.state[ i ] !== 1 ) continue;
+			const v = this.vx[ i ] * this.vx[ i ] + this.vy[ i ] * this.vy[ i ] + this.vz[ i ] * this.vz[ i ];
+			if ( v > maxV ) maxV = v;
+
+		}
+
+		const k = Math.min( this.maxSubsteps,
+			Math.max( 1, Math.ceil( Math.sqrt( maxV ) * dt / this.maxTravel ) ) );
+		this.stats.substeps = k;
+
+		const h = dt / k;
+		for ( let n = 0; n < k; n ++ ) this._substep( h );
+
+	}
+
+	_substep( dt ) {
+
 		const invDt = 1 / dt;
 		const invDt2 = invDt * invDt;
 
+		// Contacts seed their penalty from inertia, so the solver needs the step.
+		this._dt = dt;
 		this._integrateAndWarmStart( dt );
+		this._warmStartJoints();
 		this._buildContacts();
 		this._buildAdjacency();
+		this._buildJointAdjacency();
 
 		const iters = this.iterations;
 		const total = iters + ( this.postStabilize ? 1 : 0 );
@@ -348,12 +782,18 @@ export class AVBDSolver {
 
 			this._primalUpdate( invDt2, alpha );
 
-			if ( it < iters ) this._dualUpdate( alpha );
+			if ( it < iters ) {
+
+				this._dualUpdate( alpha );
+				this._jointDualUpdate( alpha );
+
+			}
 
 			if ( it === iters - 1 ) this._computeVelocities( invDt );
 
 		}
 
+		this._jointFracture( dt );
 		this._finish( dt );
 
 	}
@@ -410,6 +850,29 @@ export class AVBDSolver {
 
 	}
 
+	// Joints warm-start like contacts (Eq. 19): keep the full lambda under post
+	// stabilisation, decay only the penalty. Carrying lambda is what lets a weld
+	// hold a static load without visibly settling every frame.
+	_warmStartJoints() {
+
+		for ( let j = 0; j < this.jointCount; j ++ ) {
+
+			if ( this.jState[ j ] !== 1 ) continue;
+
+			for ( let r = 0; r < 6; r ++ ) {
+
+				const idx = j * 6 + r;
+				let p = this.jPenalty[ idx ] * this.gamma;
+				const floor = this.jointPenaltyInit;
+				this.jPenalty[ idx ] = p < floor ? floor : ( p > PENALTY_MAX ? PENALTY_MAX : p );
+				if ( ! this.postStabilize ) this.jLambda[ idx ] *= this.alpha * this.gamma;
+
+			}
+
+		}
+
+	}
+
 	// q_out = normalize( exp(w dt / 2) * q ) — world-frame angular velocity.
 	_integrateQuat( i, dt, ox, oy, oz, ow ) {
 
@@ -432,6 +895,7 @@ export class AVBDSolver {
 		const planes = this.planes, boxes = this.boxes;
 		const nPlanes = planes.length;
 		const margin = COLLISION_MARGIN;
+		this._invDt2 = 1 / ( this._dt * this._dt );
 
 		for ( let i = 0; i < this.count; i ++ ) {
 
@@ -567,10 +1031,19 @@ export class AVBDSolver {
 
 		// Warm start from the previous step (Eq. 19). With post-stabilisation the
 		// full lambda carries over and only the penalty decays.
+		// Floor the penalty at the body's own inertia over the step. A contact
+		// seeded at 1.0 produces a force of about a newton on its first iteration,
+		// which is why a fast body sails straight through a wall: the penalty ramp
+		// never catches up inside one step's iteration budget. Scaling the seed by
+		// M/dt^2 makes the constraint competitive with inertia from the start, and
+		// it is unit-free — it works the same for a 10kg paver and a tonne bench.
+		const seed = this.mass[ i ] * this._invDt2;
+
 		for ( let r = 0; r < ROWS; r ++ ) {
 
 			const src = slot * ROWS + r;
 			let pen = this.penalty[ src ] * this.gamma;
+			if ( pen < seed ) pen = seed;
 			pen = pen < PENALTY_MIN ? PENALTY_MIN : ( pen > PENALTY_MAX ? PENALTY_MAX : pen );
 			this.penalty[ src ] = pen;
 			this.cPenalty[ n * ROWS + r ] = pen;
@@ -625,7 +1098,9 @@ export class AVBDSolver {
 	// bookkeeping, and the static contacts are what hold a pile up.
 	_buildPairContacts( n ) {
 
-		const cell = 1.6;
+		// Must exceed the largest combined reach of any two bodies in the scene,
+		// or the 27-cell neighbourhood stops being sufficient.
+		const cell = 2.0;
 		const margin = COLLISION_MARGIN;
 		// Generate contacts slightly before touching. A speculative row costs
 		// nothing — its normal force clamps to zero at positive gap — and it lets
@@ -636,25 +1111,67 @@ export class AVBDSolver {
 		const grid = this._grid || ( this._grid = new Map() );
 		grid.clear();
 
+		const hash = ( x, y, z ) => ( x * 73856093 ) ^ ( y * 19349663 ) ^ ( z * 83492791 );
+
+		// Sleeping bodies go in too. They are skipped by the primal sweep, so they
+		// behave as immovable — but leaving them out of the broadphase entirely
+		// makes every settled object a ghost that anything can fly through, which
+		// is the same failure as the missing-neighbour bug above and much easier
+		// to mistake for correct behaviour.
 		for ( let i = 0; i < this.count; i ++ ) {
 
-			if ( this.state[ i ] !== 1 ) continue;
-			const key = ( Math.floor( this.px[ i ] / cell ) * 73856093 )
-				^ ( Math.floor( this.py[ i ] / cell ) * 19349663 )
-				^ ( Math.floor( this.pz[ i ] / cell ) * 83492791 );
+			if ( this.state[ i ] === 0 ) continue;
+			const key = hash(
+				Math.floor( this.px[ i ] / cell ),
+				Math.floor( this.py[ i ] / cell ),
+				Math.floor( this.pz[ i ] / cell )
+			);
 			let list = grid.get( key );
 			if ( list === undefined ) { list = []; grid.set( key, list ); }
 			list.push( i );
 
 		}
 
-		for ( const list of grid.values() ) {
+		// Scan the 3x3x3 neighbourhood, not just the home cell. Testing only
+		// same-cell pairs silently drops every contact that straddles a boundary —
+		// roughly half of them — and the failure looks exactly like objects
+		// passing through each other at random. Cell size is set above the largest
+		// combined reach in the scene so 27 cells is provably sufficient.
+		for ( let i = 0; i < this.count; i ++ ) {
 
-			for ( let a = 0; a < list.length; a ++ ) {
+			if ( this.state[ i ] === 0 ) continue;
 
-				for ( let b = a + 1; b < list.length; b ++ ) {
+			// Only the cells this body can actually reach — its own radius plus the
+			// largest radius in the scene. A blanket 3x3x3 scan is correct but does
+			// roughly three times the lookups, and for the small chunks that make up
+			// most of a debris field the real span is two cells per axis, not three.
+			const reach = this.radius[ i ] + this._maxRadius + margin;
+			const lox = Math.floor( ( this.px[ i ] - reach ) / cell );
+			const hix = Math.floor( ( this.px[ i ] + reach ) / cell );
+			const loy = Math.floor( ( this.py[ i ] - reach ) / cell );
+			const hiy = Math.floor( ( this.py[ i ] + reach ) / cell );
+			const loz = Math.floor( ( this.pz[ i ] - reach ) / cell );
+			const hiz = Math.floor( ( this.pz[ i ] + reach ) / cell );
 
-					const i = list[ a ], j = list[ b ];
+			for ( let ox = lox; ox <= hix; ox ++ ) {
+
+				for ( let oy = loy; oy <= hiy; oy ++ ) {
+
+					for ( let oz = loz; oz <= hiz; oz ++ ) {
+
+						const list = grid.get( hash( ox, oy, oz ) );
+						if ( list === undefined ) continue;
+
+						for ( let b = 0; b < list.length; b ++ ) {
+
+							const j = list[ b ];
+							// Each pair is generated once, by its lower index.
+							if ( j <= i ) continue;
+
+					// Two sleepers cannot move, so there is nothing to solve.
+					if ( this.state[ i ] === 2 && this.state[ j ] === 2 ) continue;
+
+					if ( this.jointPairs.size > 0 && this.jointPairs.has( this._pairKey( i, j ) ) ) continue;
 
 					// Broad phase still uses bounding spheres — cheap and only
 					// ever rejects, never accepts.
@@ -719,20 +1236,44 @@ export class AVBDSolver {
 					this.cAnchorY[ n ] = cpA[ 1 ];
 					this.cAnchorZ[ n ] = cpA[ 2 ];
 
+					// A sleeper only wakes for something with real closing speed,
+					// so a settled pile is not roused by its own residual jitter.
+					if ( this.state[ i ] === 2 || this.state[ j ] === 2 ) {
+
+						const rvx = this.vx[ j ] - this.vx[ i ];
+						const rvy = this.vy[ j ] - this.vy[ i ];
+						const rvz = this.vz[ j ] - this.vz[ i ];
+
+						if ( rvx * nx + rvy * ny + rvz * nz < - this.sleepLinear * 3 ) {
+
+							this.wake( i ); this.wake( j );
+
+						}
+
+					}
+
 					const s = nz >= 0 ? 1 : - 1;
 					const aa = - 1 / ( s + nz );
 					const bb = nx * ny * aa;
 					this.cT1x[ n ] = 1 + s * nx * nx * aa; this.cT1y[ n ] = s * bb; this.cT1z[ n ] = - s * nx;
 					this.cT2x[ n ] = bb; this.cT2y[ n ] = s + ny * ny * aa; this.cT2z[ n ] = - ny;
 
+					// Reduced mass, because both ends of a pair contact move.
+					const mi = this.mass[ i ], mj = this.mass[ j ];
+					const pseed = ( mi * mj / ( mi + mj ) ) * this._invDt2;
+
 					for ( let r = 0; r < ROWS; r ++ ) {
 
 						this.cLambda[ n * ROWS + r ] = 0;
-						this.cPenalty[ n * ROWS + r ] = PENALTY_MIN;
+						this.cPenalty[ n * ROWS + r ] = pseed;
 
 					}
 
 					n ++;
+
+						}
+
+					}
 
 				}
 
@@ -905,6 +1446,71 @@ export class AVBDSolver {
 					// the lever arm, and without it long arms go unstable.
 					const G = Math.abs( f ) * Math.sqrt( rx * rx + ry * ry + rz * rz );
 					aA[ 0 ] += G; aA[ 3 ] += G; aA[ 5 ] += G;
+
+				}
+
+			}
+
+			// Joints. Bilateral and unclamped, so unlike a contact these can pull
+			// as well as push — which is the entire point: a weld holds a chunk
+			// up against gravity, and how hard it is pulling is the number that
+			// decides whether it lets go.
+			const js = this.bodyJointStart[ i ], je = this.bodyJointStart[ i + 1 ];
+
+			for ( let k = js; k < je; k ++ ) {
+
+				const enc = this.bodyJointList[ k ];
+				const isB = enc < 0;
+				const j = isB ? ~ enc : enc;
+
+				this._evalJoint( j, alpha );
+
+				const sgn = isB ? - 1 : 1;
+				const rx = isB ? this.jRbx[ j ] : this.jRax[ j ];
+				const ry = isB ? this.jRby[ j ] : this.jRay[ j ];
+				const rz = isB ? this.jRbz[ j ] : this.jRaz[ j ];
+				const rlen = Math.sqrt( rx * rx + ry * ry + rz * rz );
+				const base = j * 6;
+
+				// Linear rows: axis-aligned, so J_lin is a unit basis vector and
+				// J_ang is r x e_k. One diagonal entry each in the linear block.
+				for ( let r = 0; r < 3; r ++ ) {
+
+					const idx = base + r;
+					const pen = this.jPenalty[ idx ];
+					const f = pen * this.jC[ idx ] + this.jLambda[ idx ];
+
+					let kx, ky, kz;
+					if ( r === 0 ) { kx = 0; ky = rz; kz = - ry; }
+					else if ( r === 1 ) { kx = - rz; ky = 0; kz = rx; }
+					else { kx = ry; ky = - rx; kz = 0; }
+
+					kx *= sgn; ky *= sgn; kz *= sgn;
+
+					if ( r === 0 ) { b0 += sgn * f; a[ 0 ] += pen; }
+					else if ( r === 1 ) { b1 += sgn * f; a[ 3 ] += pen; }
+					else { b2 += sgn * f; a[ 5 ] += pen; }
+
+					c0 += kx * f; c1 += ky * f; c2 += kz * f;
+
+					aA[ 0 ] += kx * kx * pen; aA[ 1 ] += kx * ky * pen; aA[ 2 ] += kx * kz * pen;
+					aA[ 3 ] += ky * ky * pen; aA[ 4 ] += ky * kz * pen; aA[ 5 ] += kz * kz * pen;
+
+					const G = Math.abs( f ) * rlen;
+					aA[ 0 ] += G; aA[ 3 ] += G; aA[ 5 ] += G;
+
+				}
+
+				// Angular rows: J_ang is a unit basis vector, J_lin is zero.
+				for ( let r = 3; r < 6; r ++ ) {
+
+					const idx = base + r;
+					const pen = this.jPenalty[ idx ];
+					const f = pen * this.jC[ idx ] + this.jLambda[ idx ];
+
+					if ( r === 3 ) { c0 += sgn * f; aA[ 0 ] += pen; }
+					else if ( r === 4 ) { c1 += sgn * f; aA[ 3 ] += pen; }
+					else { c2 += sgn * f; aA[ 5 ] += pen; }
 
 				}
 

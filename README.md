@@ -14,9 +14,12 @@ test** (§29, Phase 0):
 Everything else in the index is superstructure over that, so this build runs
 exactly that experiment and adds only what is needed to judge it honestly.
 
-## Running it
+## Playing it
 
-No build step, no install. Serve the directory and open it:
+**<https://sbenjam1n.github.io/apparition/>** once Pages is switched on — see
+[Deploying](#deploying) for the two settings that need flipping the first time.
+
+Locally, no build step and no install:
 
 ```
 python3 -m http.server 8080     # or: npx http-server -p 8080
@@ -65,11 +68,9 @@ throw draws on a fixed impulse budget, which is the single number that makes the
 economy work: a 10kg paver takes the full speed and shoves you 2.5 m/s, while the
 430kg bench eats the whole budget, barely moves, and launches *you* at 13 m/s.
 
-**Destruction** (`destruct.js`) — three authored weak panels, three discrete
-states each, fixed chunk sets, no runtime fracture (§7.4). Damage is 3% of impact
-kinetic energy and only counts the component travelling into the panel, so three
-thrown pavers stress one and an 85kg drum at speed does it alone. The instrument
-is the keycard (§7.3).
+**Destruction** (`destruct.js`) — authored chunk sets welded together by a joint
+graph, so panels hole where you hit them instead of detaching all at once. See
+[Bonds](#bonds-the-joint-graph) below.
 
 **Debris** (`avbd.js`, `debris.js`) — see below. One `InstancedMesh` over the
 whole solver; no per-chunk `Object3D`.
@@ -92,6 +93,52 @@ and dies fast, concrete is broadband and dull, glass is bright and inharmonic,
 steel rings long. §51.8 flags audio as mis-filed as art direction when it is the
 primary feedback channel for an invisible protagonist in an unlit room, so it is a
 system here rather than a polish pass — a small one, but a system.
+
+## Bonds: the joint graph
+
+A panel is a fixed grid of authored chunks — still discrete, still no runtime
+fracture (§7.4) — welded to each other and to the frame by six-row joints: three
+linear rows holding a pair of anchors coincident, three angular rows holding a
+relative orientation. Hit it and only the welds near the impact exceed their
+fracture load, so three chunks drop out and leave a ragged hole with the rest
+still standing. Hit it somewhere else and you get a different hole. Roughly 93
+constraints for a 42-chunk panel, against the ~5,000 a particle lattice at the
+same resolution would need.
+
+**Fracture reads λ, not stretch.** λ is the Lagrange multiplier — the force the
+constraint is actually carrying, in newtons — so "this weld shears at 9kN"
+survives every change to stiffness, iteration count and timestep. A stretch
+threshold has to be re-tuned when any of those move. Measured: a 42-chunk panel
+weighs 12,361 N and its frame welds carry 640 N each at rest, against a predicted
+562 N. Fracture thresholds sit 14× above that.
+
+**Collapse is connectivity, not simulation.** §32.3, Siege's rule: a piece that
+loses its path to the frame falls, anything still attached stays. Union-find over
+the surviving welds, microseconds, no structural solver. Orphaned chunks are
+woken explicitly — gravity only integrates for awake bodies, and breaking a weld
+only wakes its own two ends, so a chunk three hops away can be orphaned without
+ever being touched.
+
+**Welds creep before they let go** (§45.5, the delayed shred). Above a yield
+fraction of the break load a joint accumulates damage that permanently shrinks
+its effective strength, so an overloaded panel sags and drops seconds later
+rather than popping. Under dilation those seconds are a very long time.
+
+**§31.3 survives, because the enumerable thing is aperture topology.** The
+verifier does not care which of 2^93 weld subsets survived — it cares whether
+there is a hole the player fits through. Three states per panel (INTACT /
+BREACHED / OPEN) stay exhaustively checkable with the lattice as cosmetic detail
+underneath, and the player's own collision runs against the same open-cell grid
+the aperture test reads, so what the verifier proves and what the controls permit
+cannot drift apart. The partition panel in the middle of the room is there to
+make that concrete: blowing it open produces a route, not a readout.
+
+Material character comes from the weld parameters rather than from one strength
+number. Horizontal bed joints are weaker than vertical head joints, so failure
+tends to run in courses; perimeter welds are stronger than field welds, so a
+panel prefers to hole in the middle rather than fall out whole. The three test
+panels are tuned to fail visibly differently: coursed block, water-damaged, and
+well-tied-and-stiff.
 
 ## "Fake 6DOF particles with AVBD"
 
@@ -119,10 +166,19 @@ The **fake is in the collision layer, not the solver**:
 - Bodies sleep after 500ms at rest, which lines up with §23.6's "correct behaviour
   for roughly 500ms" and is the largest single saving in the field.
 
-**Measured**: 473 live bodies, 447 of them awake and in contact, cost **1.37ms per
-solver step** — about 8% of a 60fps frame. The solver is not the bottleneck;
-rendering is. Numbers from a headless container CPU, so treat them as an order of
-magnitude, not a promise.
+Contacts are generated at the *predicted* end-of-step position and their penalty
+is seeded from `M/dt²`, so a constraint is competitive with inertia on its first
+iteration. Seeded at the default floor instead, a contact produces about a newton
+on iteration one and a fast body sails straight through a wall before the ramp
+catches up. The step also subdivides adaptively — at 60Hz, 20 m/s is 0.33 m per
+step against a 0.28 m panel, so nothing is allowed to travel more than 0.14 m at
+a time. Costs nothing at rest, because the substep count is 1 unless something is
+actually moving.
+
+**Measured**: 473 bodies with no joints cost **1.37 ms per solver step**. The
+worst case built here — 440 bodies, 3 live panels, 238 welds, 900 dust particles,
+3 substeps — costs **5.4 ms per step**, or 1.8 ms per substep. Numbers from a
+headless container CPU, so treat them as an order of magnitude, not a promise.
 
 One thing worth flagging for the design index: §10.8 claims large object counts
 are affordable *because* the fight is slow. That is not hand-waving — low relative
@@ -130,10 +186,22 @@ velocity is exactly the regime where a position-based solver converges in one or
 two iterations. Dilation genuinely is the cheap case here. Wind the wheel and
 watch the contact count against frame time.
 
-**Bounding spheres do not work for this.** The first pass used sphere-vs-sphere
-for pair contacts, which phantom-collides anything elongated: a 1.8m bench has a
-0.94m bounding sphere, so it collided with objects a metre away and the penalty
-ramp launched both bodies at 22 m/s. Recorded here so it is not re-attempted.
+### Things that were wrong, recorded so they are not re-attempted
+
+- **Bounding spheres for pair contacts.** Phantom-collides anything elongated: a
+  1.8m bench has a 0.94m bounding sphere, so it collided with objects a metre
+  away and the penalty ramp launched both bodies at 22 m/s.
+- **Testing only same-cell pairs in the uniform grid.** Silently drops every
+  contact that straddles a cell boundary — roughly half of them — and the failure
+  looks exactly like objects randomly passing through each other.
+- **Leaving sleeping bodies out of the broadphase.** Makes every settled object a
+  ghost. Easy to mistake for correct behaviour, because settled things are
+  usually not being hit.
+- **Low-pass filtering λ to reject fracture noise.** Wrong direction: the settle
+  transient is slow and an impact is two frames, so no low-pass separates them.
+  Fixed the cause instead — seeding the weld penalty so there is no transient.
+- **Recomputing panel state only on fracture events.** Chunks fall out for
+  seconds after the last weld goes, so the aperture never registered.
 
 ## Running on a 2019 MacBook
 
@@ -176,6 +244,20 @@ Known rough edges: player-vs-world collision is a 4-iteration push-out rather th
 a swept test (fine at these speeds, would tunnel at Descent speeds); pair contacts
 degrade under deep interpenetration; the input budget flagged in §51.7 is
 unresolved and deliberately left visible rather than papered over with modifiers.
+
+## Deploying
+
+`.github/workflows/pages.yml` publishes the repository root to GitHub Pages on
+every push to `main` (and to the working branch, and on manual dispatch). It
+needs two things done once, by hand:
+
+1. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
+2. The `github-pages` environment restricts deployments to the default branch by
+   default. Either merge to `main`, or add the working branch under
+   **Settings → Environments → github-pages → Deployment branches**.
+
+Nothing else is required — no build, no bundler, and every internal path is
+relative, so it works from the `/apparition/` project subpath unchanged.
 
 ## Credits and licensing
 

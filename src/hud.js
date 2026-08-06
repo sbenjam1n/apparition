@@ -41,9 +41,22 @@ export class Hud {
 
 		if ( p && p.kind === 'panel' ) {
 
-			const state = [ 'INTACT', 'STRESSED', 'BLOWN' ][ p.panel.state ];
-			const pct = Math.min( 100, Math.round( p.panel.damage / 3.8 ) );
-			probeLine = `WEAK PANEL   ${state}  ${pct}%`;
+			const pn = p.panel;
+			const state = [ 'INTACT', 'BREACHED', 'OPEN' ][ pn.state ];
+
+			if ( pn.activated ) {
+
+				const live = data.panels[ pn.id ];
+				probeLine = `WEAK PANEL   ${state}   ${live.joints}/${live.totalJoints} welds` +
+					`   ${live.open}/${live.cells} cells out` +
+					( live.loose > 0 ? `   ${live.loose} unsupported` : '' );
+
+			} else {
+
+				const pct = Math.min( 99, Math.round( pn.damage / 1.1 ) );
+				probeLine = `WEAK PANEL   INTACT   ${pct}% to failure`;
+
+			}
 
 		} else if ( p && p.kind === 'body' ) {
 
@@ -57,13 +70,18 @@ export class Hud {
 
 		this.el.innerHTML =
 			`<b>${this.fps.toFixed( 0 ).padStart( 3 )}</b> fps   tier <b>${data.tier}</b>   dpr <b>${data.dpr.toFixed( 2 )}</b>\n` +
-			`bodies <b>${data.active}</b> awake  <b>${data.asleep}</b> settled  <b>${data.contacts}</b> contacts\n` +
+			`bodies <b>${data.active}</b> awake  <b>${data.asleep}</b> settled  <b>${data.contacts}</b> contacts  x<b>${data.substeps}</b>\n` +
 			`\n` +
 			`draw   ${wattBar} <b>${data.watts.toFixed( 0 ).padStart( 4 )}</b> W\n` +
 			`heat   ${heatBar} <b>${data.heat.toFixed( 0 ).padStart( 4 )}</b>\n` +
 			`held   <b>${data.held}</b>  ${data.load.toFixed( 1 )} kg\n` +
 			`speed  <b>${data.speed.toFixed( 1 )}</b> m/s${data.dilation > 0.01 ? `   <span class="warn">dilated 1:${( 1 / Math.max( 0.02, 1 - data.dilation ) ).toFixed( 0 )}</span>` : '' }\n` +
 			`light  ${this._bar( data.light, 18 )} <b>${( data.light * 100 ).toFixed( 0 )}</b>%\n` +
+			`dust   ${this._bar( Math.min( 1, data.suspended / 12 ), 18 )} <b>${data.dust}</b> aloft\n` +
+			`\n` +
+			`panels ${data.panels.map( p => p.active
+				? `<b>${p.state}</b> ${p.open}/${p.cells}`
+				: `<span style="opacity:.45">intact</span>` ).join( '   ' )}\n` +
 			`\n` +
 			`probe  ${probeLine}`;
 

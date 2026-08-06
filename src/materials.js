@@ -4,7 +4,7 @@
 // part of the room rather than as spawned props.
 
 import * as THREE from 'three';
-import { LIGHT_GLSL } from './lighting.js';
+import { LIGHT_GLSL, DISPLACE_GLSL } from './lighting.js';
 
 const VERT_COMMON = /* glsl */`
 	varying vec3 vWorld;
@@ -32,9 +32,13 @@ export function createSurfaceMaterial( rig, opts = {} ) {
 
 	return new THREE.ShaderMaterial( {
 		uniforms,
-		vertexShader: VERT_COMMON + /* glsl */`
+		vertexShader: VERT_COMMON + DISPLACE_GLSL + /* glsl */`
 			void main() {
 				vec4 wp = modelMatrix * vec4( position, 1.0 );
+				// Fourth register (§48.3): shape only. vWorld carries the displaced
+				// position so the lighting follows the geometry rather than sliding
+				// across it.
+				wp.xyz += displace( wp.xyz );
 				vWorld = wp.xyz;
 				vNrm = normalize( mat3( modelMatrix ) * normal );
 				gl_Position = projectionMatrix * viewMatrix * wp;
@@ -107,7 +111,7 @@ export function createDebrisMaterial( rig ) {
 
 	return new THREE.ShaderMaterial( {
 		uniforms,
-		vertexShader: /* glsl */`
+		vertexShader: DISPLACE_GLSL + /* glsl */`
 			attribute float aHeat;
 			attribute vec3 aTint;
 			varying vec3 vWorld;
@@ -118,6 +122,7 @@ export function createDebrisMaterial( rig ) {
 			void main() {
 				mat4 m = modelMatrix * instanceMatrix;
 				vec4 wp = m * vec4( position, 1.0 );
+				wp.xyz += displace( wp.xyz );
 				vWorld = wp.xyz;
 				vNrm = normalize( mat3( m ) * normal );
 				vHeat = aHeat;
@@ -176,9 +181,10 @@ export function createWaterMaterial( rig ) {
 	return new THREE.ShaderMaterial( {
 		uniforms,
 		transparent: false,
-		vertexShader: VERT_COMMON + /* glsl */`
+		vertexShader: VERT_COMMON + DISPLACE_GLSL + /* glsl */`
 			void main() {
 				vec4 wp = modelMatrix * vec4( position, 1.0 );
+				wp.xyz += displace( wp.xyz );
 				vWorld = wp.xyz;
 				vNrm = normalize( mat3( modelMatrix ) * normal );
 				gl_Position = projectionMatrix * viewMatrix * wp;

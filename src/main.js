@@ -22,7 +22,8 @@ import { DebrisField } from './debris.js';
 import { Flight, TUNING } from './flight.js';
 import { Input } from './input.js';
 import { Telekinesis, TK } from './telekinesis.js';
-import { Destruction, addTestPanels, PANEL_STATE } from './destruct.js';
+import { Destruction, addTestPanels, PANEL_STATE, PANEL_STATE_NAME } from './destruct.js';
+import { DustField } from './dust.js';
 import { PostStack, POST } from './fx.js';
 import { ImpactAudio } from './audio.js';
 import { Hud } from './hud.js';
@@ -52,6 +53,12 @@ const flight = new Flight( solver );
 const telekinesis = new Telekinesis( solver, flight, debris );
 const destruction = new Destruction( scene, rig, solver, debris );
 const panels = addTestPanels( destruction, rig, ROOM );
+flight.panels = panels;
+
+const dust = new DustField( scene, rig, {
+	min: { x: - ROOM.halfW, y: ROOM.pool.bottom, z: - ROOM.halfD },
+	max: { x: ROOM.halfW, y: ROOM.height, z: ROOM.halfD }
+}, 900 );
 
 scatterProps( solver, ( i, kind ) => debris.register( i, kind ) );
 
@@ -94,20 +101,40 @@ solver.onImpact = ( i, speed, x, y, z, material ) => {
 
 };
 
-destruction.onStateChange = panel => {
+// A joint letting go is the atomic destruction event now. Everything downstream
+// — dust, sound, the aperture recount — hangs off the lambda that broke it, so a
+// weld that gave up quietly and one that was torn out do not produce the same
+// plume or the same noise.
+solver.onFracture = ( j, force, x, y, z, group ) => {
 
-	if ( panel.state === PANEL_STATE.BLOWN ) {
+	const panel = destruction.panelOfGroup( group );
+	const n = panel ? panel.normal : { x: 0, y: 1, z: 0 };
+	dust.puff( x, y, z, force, n.x, n.y, n.z );
 
-		audio.release( 8 );
-		for ( const s of rig.strips ) rig.pulse( s, 0.35, 3 );
-		// The one sanctioned use of the chroma channel (§44.9). A wall coming
-		// apart is not an erasure, so this is a single frame at low amplitude —
-		// present here only so the reserved register is wired and testable.
-		post.erase( 0.35 );
+	audio.impact( 1.5 + Math.min( 7, force / 3200 ), MATERIAL_KIND.CONCRETE, 0 );
+	destruction.onFracture( group );
 
-	} else {
+};
 
-		audio.impact( 6, MATERIAL_KIND.CONCRETE, 0 );
+destruction.onActivate = panel => {
+
+	audio.release( 6 );
+	for ( const s of rig.strips ) rig.pulse( s, 0.3, 3 );
+	// Fourth register (§48.3): shape only, no colour. A wall giving way should
+	// be felt in the room around it before it is seen in the wall itself.
+	rig.shockwave( panel.center.x, panel.center.y, panel.center.z, 0.11, 11, 20 );
+
+};
+
+destruction.onStateChange = ( panel, prev ) => {
+
+	if ( panel.state === PANEL_STATE.OPEN ) {
+
+		audio.release( 10 );
+		rig.shockwave( panel.center.x, panel.center.y, panel.center.z, 0.16, 13, 26 );
+		// The reserved chroma channel (§44.9), poked once at low amplitude so it
+		// stays wired and testable. Not a look, and never on anything routine.
+		post.erase( 0.3 );
 
 	}
 
@@ -125,11 +152,11 @@ telekinesis.onGrab = () => audio.impact( 1.6, MATERIAL_KIND.STEEL, 0 );
 // solver iterations, then bloom.
 
 const TIERS = [
-	{ dpr: 1.00, volumetric: 3, iterations: 6, bloom: true, maxBodies: 640 },
-	{ dpr: 1.00, volumetric: 2, iterations: 5, bloom: true, maxBodies: 512 },
-	{ dpr: 0.85, volumetric: 1, iterations: 4, bloom: true, maxBodies: 384 },
-	{ dpr: 0.72, volumetric: 0, iterations: 4, bloom: true, maxBodies: 288 },
-	{ dpr: 0.62, volumetric: 0, iterations: 3, bloom: false, maxBodies: 192 }
+	{ dpr: 1.00, volumetric: 3, iterations: 6, substeps: 3, bloom: true },
+	{ dpr: 1.00, volumetric: 2, iterations: 5, substeps: 3, bloom: true },
+	{ dpr: 0.85, volumetric: 1, iterations: 4, substeps: 3, bloom: true },
+	{ dpr: 0.72, volumetric: 0, iterations: 4, substeps: 2, bloom: true },
+	{ dpr: 0.62, volumetric: 0, iterations: 3, substeps: 2, bloom: false }
 ];
 
 const quality = {
@@ -162,6 +189,10 @@ function applyTier() {
 	renderer.setPixelRatio( quality.dpr );
 	rig.uniforms.uVolumetricSteps.value = t.volumetric;
 	solver.iterations = t.iterations;
+	// Fewer substeps is the last thing to give up: it trades tunnelling
+	// resistance for frame time, and a fast object passing through a wall is a
+	// worse failure than a soft one.
+	solver.maxSubsteps = t.substeps;
 	post.bloom.enabled = t.bloom;
 	post.setSize( innerWidth, innerHeight, quality.dpr );
 
@@ -245,6 +276,37 @@ gPhys.add( solver, 'gamma', 0.5, 1, 0.01 ).name( 'gamma (warmstart decay)' );
 gPhys.add( solver, 'postStabilize' ).name( 'post-stabilise' );
 gPhys.add( solver, 'sleepTime', 0.05, 3, 0.05 ).name( 'sleep after (s)' );
 gPhys.add( solver, 'gravity', - 30, 0, 0.1 ).name( 'gravity' );
+gPhys.add( solver, 'maxSubsteps', 1, 6, 1 ).name( 'max substeps' );
+gPhys.add( solver, 'maxTravel', 0.03, 0.5, 0.01 ).name( 'travel / substep (m)' );
+
+const gJoint = gui.addFolder( 'Bonds (weld joints)' );
+gJoint.add( solver, 'creepRate', 0, 4, 0.05 ).name( 'creep rate' );
+gJoint.add( { info: 'fracture reads lambda, in newtons' }, 'info' ).name( 'note' ).disable();
+gJoint.add( {
+	weaken() {
+
+		// Halve every surviving weld in the level. Fast way to watch the delayed
+		// shred (§45.5) without having to throw anything.
+		for ( let j = 0; j < solver.jointCount; j ++ ) {
+
+			if ( solver.jState[ j ] === 1 ) solver.jDamage[ j ] = Math.min( 0.95, solver.jDamage[ j ] + 0.5 );
+
+		}
+
+	}
+}, 'weaken' ).name( 'halve all welds' );
+
+const gWarp = gui.addFolder( 'Displacement (4th register)' );
+gWarp.add( rig.uniforms.uWarpAmount, 'value', 0, 0.25, 0.002 ).name( 'ambient warp' );
+gWarp.add( rig.uniforms.uWarpScale, 'value', 0.05, 3, 0.05 ).name( 'warp scale' );
+gWarp.add( rig.uniforms.uShockThickness, 'value', 0.3, 6, 0.1 ).name( 'wave thickness' );
+gWarp.add( {
+	fire() { rig.shockwave( flight.position.x, flight.position.y, flight.position.z, 0.18, 12, 26 ); }
+}, 'fire' ).name( 'shockwave from here' );
+
+const gDust = gui.addFolder( 'Dust' );
+gDust.add( dust.material.uniforms.uOpacity, 'value', 0, 1.5, 0.02 ).name( 'opacity' );
+gDust.add( dust, 'densityDecay', 0, 1.5, 0.02 ).name( 'evidence decay' );
 
 const gLook = gui.addFolder( 'Light & post' );
 gLook.add( rig.uniforms.uFogDensity, 'value', 0, 0.16, 0.002 ).name( 'fog density' );
@@ -276,22 +338,19 @@ const actions = {
 	respawnPanels() {
 
 		// Persistence is real (§7.5) — this is a dev reset, not a game mechanic.
-		for ( const p of panels ) {
+		for ( const p of panels ) destruction.restore( p );
+		dust.clear();
 
-			p.state = PANEL_STATE.INTACT;
-			p.damage = 0;
-			p.chunksSpawned = false;
-			p.mesh.visible = true;
-			p.mesh.position.copy( p.center );
-			p.mesh.rotation.z = 0;
-			p.material.uniforms.uGrout.value.setHex( 0x1a1004 );
+	},
+	activatePanels() {
 
-		}
+		for ( const p of panels ) destruction.activate( p );
 
 	},
 	clearDebris() {
 
 		telekinesis.releaseAll();
+		dust.clear();
 		for ( let i = 0; i < solver.count; i ++ ) if ( solver.state[ i ] !== 0 ) solver.release( i );
 		scatterProps( solver, ( i, kind ) => debris.register( i, kind ) );
 
@@ -302,6 +361,7 @@ const actions = {
 
 gui.add( actions, 'resetFlight' ).name( 'reset position (G)' );
 gui.add( actions, 'respawnPanels' ).name( 'restore panels' );
+gui.add( actions, 'activatePanels' ).name( 'activate panels' );
 gui.add( actions, 'clearDebris' ).name( 'clear debris' );
 gui.add( actions, 'relight' ).name( 'restore lighting' );
 
@@ -395,6 +455,7 @@ function frame() {
 	telekinesis.update( state, Math.max( dt, 1e-4 ), destruction );
 	destruction.update( dt, flight );
 	debris.update( dt );
+	dust.update( dt, flight.viewPosition, flight.velocity );
 
 	rig.uniforms.uTime.value = elapsed;
 	rig.update( dt, flight.viewPosition );
@@ -414,9 +475,21 @@ function frame() {
 		active: solver.stats.active,
 		asleep: solver.stats.asleep,
 		contacts: solver.stats.contacts,
+		substeps: solver.stats.substeps,
 		watts: telekinesis.watts,
 		heat: telekinesis.heat,
 		wattScale: TK.wattScale,
+		panels: panels.map( p => ( {
+			state: PANEL_STATE_NAME[ p.state ],
+			active: p.activated,
+			open: p.openCount | 0,
+			cells: p.chunks.length,
+			joints: p.activated ? destruction.liveJoints( p ) : 0,
+			totalJoints: p.joints.length,
+			loose: p.activated ? destruction.detachedCount( p ) : 0
+		} ) ),
+		dust: dust.live,
+		suspended: dust.suspended,
 		held: telekinesis.held.length,
 		load: telekinesis.load,
 		speed: flight.velocity.length(),
@@ -439,4 +512,4 @@ addEventListener( 'resize', () => {
 frame();
 
 // Exposed for console poking during tuning.
-window.APPARITION = { solver, rig, flight, telekinesis, destruction, debris, quality, post, TUNING, TK, POST };
+window.APPARITION = { solver, rig, flight, telekinesis, destruction, debris, dust, panels, quality, post, TUNING, TK, POST };

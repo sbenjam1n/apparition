@@ -24,7 +24,10 @@ export const ROOM = {
 	pool: { x0: - 3.4, x1: 3.4, z0: 1.0, z1: 7.4, bottom: - 1.4, water: - 0.28 },
 	piers: [ { z: - 2.5 }, { z: - 7.0 }, { z: - 11.5 } ],
 	pierX: 7.6,
-	pierHalf: { x: 0.7, y: 2.6, z: 1.9 }
+	pierHalf: { x: 0.7, y: 2.6, z: 1.9 },
+	// Interior partition with a panel-sized opening: x0..x1 / y0..y1 is the hole
+	// the weak panel fills, xEnd is where the partition stops short of the room.
+	partition: { z: - 1.0, t: 0.14, top: 5.2, x0: - 10.5, x1: - 7.5, y0: 1.6, y1: 4.1, xEnd: - 5.5 }
 };
 
 export const MATERIAL_KIND = { TILE: 0, CONCRETE: 1, GLASS: 2, STEEL: 3 };
@@ -83,9 +86,15 @@ export function buildRoom( scene, rig, solver ) {
 		streak: 0.55
 	} );
 
+	// Segmented, because the displacement register (§48.3, fourth channel) can
+	// only bend geometry that has vertices in it. Roughly one per metre — enough
+	// for a shockwave to read, cheap enough to be free.
+	const SEG = 1.1;
+
 	const plane = ( w, h, pos, rot, mat ) => {
 
-		const m = new THREE.Mesh( new THREE.PlaneGeometry( w, h ), mat );
+		const m = new THREE.Mesh( new THREE.PlaneGeometry( w, h,
+			Math.max( 1, Math.round( w / SEG ) ), Math.max( 1, Math.round( h / SEG ) ) ), mat );
 		m.position.set( pos[ 0 ], pos[ 1 ], pos[ 2 ] );
 		m.rotation.set( rot[ 0 ], rot[ 1 ], rot[ 2 ] );
 		g.add( m );
@@ -95,7 +104,10 @@ export function buildRoom( scene, rig, solver ) {
 
 	const box = ( hx, hy, hz, cx, cy, cz, mat ) => {
 
-		const m = new THREE.Mesh( new THREE.BoxGeometry( hx * 2, hy * 2, hz * 2 ), mat );
+		const m = new THREE.Mesh( new THREE.BoxGeometry( hx * 2, hy * 2, hz * 2,
+			Math.max( 1, Math.round( hx * 2 / SEG ) ),
+			Math.max( 1, Math.round( hy * 2 / SEG ) ),
+			Math.max( 1, Math.round( hz * 2 / SEG ) ) ), mat );
 		m.position.set( cx, cy, cz );
 		g.add( m );
 		return m;
@@ -207,6 +219,25 @@ export function buildRoom( scene, rig, solver ) {
 			new THREE.Vector3( fx, 0.06, p.z + R.pierHalf.z ),
 			COLD, 0.035
 		);
+
+	}
+
+	// An interior partition with a panel-sized opening in it. The boundary walls
+	// can report an aperture but there is nothing behind them; this one is the
+	// only place where blowing a hole genuinely produces a route, which is the
+	// whole point of computing aperture topology at all.
+	const PT = ROOM.partition;
+	const frame = [
+		[ ( PT.x0 + R.halfW ) / 2, PT.top / 2, PT.t, ( PT.x0 - R.halfW ) / 2, PT.top / 2, PT.z ],
+		[ ( PT.xEnd - PT.x1 ) / 2, PT.top / 2, PT.t, ( PT.x1 + PT.xEnd ) / 2, PT.top / 2, PT.z ],
+		[ ( PT.x1 - PT.x0 ) / 2, PT.y0 / 2, PT.t, ( PT.x0 + PT.x1 ) / 2, PT.y0 / 2, PT.z ],
+		[ ( PT.x1 - PT.x0 ) / 2, ( PT.top - PT.y1 ) / 2, PT.t, ( PT.x0 + PT.x1 ) / 2, ( PT.top + PT.y1 ) / 2, PT.z ]
+	];
+
+	for ( const f of frame ) {
+
+		box( f[ 0 ], f[ 1 ], f[ 2 ], f[ 3 ], f[ 4 ], f[ 5 ], tiled );
+		solver.addBox( f[ 3 ], f[ 4 ], f[ 5 ], f[ 0 ], f[ 1 ], f[ 2 ], 0.6, MATERIAL_KIND.TILE );
 
 	}
 
