@@ -43,12 +43,26 @@ requirement is a browser with WebGL2. Click to lock the pointer.
 | `F` | probe — reads mass, material, structural weakness |
 | wheel | dilation dial |
 | `G` | reset position |
+| `P` | copy current tuning to the clipboard |
 | `Tab` | show / hide the tuning panel |
 | `Esc` | release the cursor — the scene keeps running and the panel stays live |
 
 **Open the tuning panel.** Feel cannot be judged from someone else's numbers, and
 the panel is the actual instrument here — the rest of the build is apparatus
 around it. Flight, camera, telekinesis, solver and lighting are all live.
+
+**`P` copies what you dialled.** It writes the diff against the build defaults to
+the clipboard as pasteable assignments, and prints the same thing to the console
+in case the browser refuses the clipboard. With nothing changed it emits the full
+snapshot instead. A tuning pass is worth nothing if it does not survive the tab
+being closed.
+
+```
+// APPARITION tuning — 3 changed from build defaults
+TUNING.thrustScale             = 0.62;
+POST.grain                     = 0.09;
+rig.uniforms.uFogColor.value.set( '#123456' );
+```
 
 ## What is in it
 
@@ -57,8 +71,8 @@ substeps, one drag coefficient on both linear and angular velocity, thrust as a
 per-substep delta-v rather than an acceleration, sinusoidal wiggle, turn-induced
 banking, softened auto-level. Constants come from Descent's `PLAYER_SHIP` entry
 by way of mrdoob's three.js port. Two things are not Descent's: thrust is scaled
-down hard (its terminal velocity crosses this 28m room in half a second), and the
-camera trails the player's transform on a spring that gets heavier as you carry
+down (Descent's own terminal velocity crosses this 28m room in half a second), and
+the camera trails the player's transform on a spring that gets heavier as you carry
 more. A viewpoint that lags input has mass, and mass reads as embodiment (§47.2)
 — it is the only body this character gets.
 

@@ -25,7 +25,8 @@ const DEFAULTS = {
 	burn: [ 'ControlLeft', 'ControlRight' ],
 	probe: [ 'KeyF' ],
 	releaseOrbit: [ 'KeyR' ],
-	reset: [ 'KeyG' ]
+	reset: [ 'KeyG' ],
+	copyTuning: [ 'KeyP' ]
 };
 
 export class Input {
@@ -50,13 +51,28 @@ export class Input {
 			burn: false, mouseX: 0, mouseY: 0
 		};
 
+		// Edges are latched at the event, not sampled per frame. Polling
+		// `down && !wasDown` once a frame silently drops any tap shorter than a
+		// frame — at 30fps that is a 33ms window, and a quick keypress loses.
 		this._edges = Object.create( null );
-		this._prev = Object.create( null );
+		this._latched = Object.create( null );
 
 		addEventListener( 'keydown', e => {
 
 			// Never swallow the browser's own escapes.
 			if ( e.code === 'F5' || e.code === 'F12' || ( e.metaKey || e.ctrlKey ) && e.code === 'KeyR' ) return;
+
+			// Latch on the transition only, so auto-repeat does not re-fire it.
+			if ( this.keys[ e.code ] !== true ) {
+
+				for ( const action in DEFAULTS ) {
+
+					if ( DEFAULTS[ action ].indexOf( e.code ) !== - 1 ) this._latched[ action ] = true;
+
+				}
+
+			}
+
 			this.keys[ e.code ] = true;
 			if ( e.code.startsWith( 'Arrow' ) || e.code === 'Space' ) e.preventDefault();
 			if ( this.locked && e.code !== 'Tab' ) e.preventDefault();
@@ -65,7 +81,7 @@ export class Input {
 
 		addEventListener( 'keyup', e => { this.keys[ e.code ] = false; } );
 
-		addEventListener( 'blur', () => { this.keys = Object.create( null ); } );
+		addEventListener( 'blur', () => { this.keys = Object.create( null ); this._latched = Object.create( null ); } );
 
 		domElement.addEventListener( 'mousedown', e => {
 
@@ -136,13 +152,8 @@ export class Input {
 
 		const s = this.state;
 
-		for ( const action in DEFAULTS ) {
-
-			const now = this.down( action );
-			this._edges[ action ] = now && ! this._prev[ action ];
-			this._prev[ action ] = now;
-
-		}
+		this._edges = this._latched;
+		this._latched = Object.create( null );
 
 		s.forward = this.down( 'forward' );
 		s.back = this.down( 'back' );

@@ -40,6 +40,14 @@
 		}
 		#gate.hidden { display: none; }
 
+		#toast {
+			position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%);
+			z-index: 40; padding: 7px 14px; border: 1px solid #2b3d4a; border-radius: 4px;
+			background: rgba(6,12,17,.92); color: #cfe8f5; white-space: pre;
+			opacity: 0; transition: opacity .18s; pointer-events: none; letter-spacing: .04em;
+		}
+		#toast.show { opacity: 1; }
+
 		/* After the first lock the gate stops being a wall. Escape should hand you
 		   the cursor over a live scene so the tuning sliders can be dragged while
 		   watching, not cover the thing you are trying to look at. */
@@ -68,6 +76,7 @@
 <body>
 	<div id="hud"></div>
 	<div id="reticle"></div>
+	<div id="toast"></div>
 
 	<div id="gate">
 		<div class="full">
@@ -85,6 +94,7 @@
 				<i>RMB</i><span>throw the orbit (recoil applies)</span>
 				<i>F</i><span>probe — reads mass and weakness</span>
 				<i>R</i><span>release the orbit gently</span>
+				<i>P</i><span>copy current tuning to clipboard</span>
 				<i>Esc</i><span>cursor out — panel stays live</span>
 			</div>
 		</div>

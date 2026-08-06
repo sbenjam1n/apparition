@@ -9,11 +9,11 @@
 // Constants come from the PLAYER_SHIP entry in Descent's bitmaps.bin, by way of
 // mrdoob's three.js port (MIT): https://github.com/mrdoob/three-descent
 //
-// Every tuning number below is three-descent's, unscaled — thrust, drag, mouse
-// sensitivity, roll scale. The room is 28m end to end and Descent's terminal
-// velocity is ~57 u/s, so it crosses in about half a second. That is the real
-// Descent feel and it is deliberately the default; `thrust` in the tuning panel
-// is the one dial to turn if you want the room to read as larger.
+// The model's shape is three-descent's exactly. The magnitudes are not: thrust,
+// mouse sensitivity and arrow-key rotation were dialled in against this room by
+// hand, because this room is 28m end to end rather than a mine. Each one notes
+// what three-descent uses and why it moved. Press P in the running build to copy
+// whatever you have dialled since.
 //
 // One thing is ours rather than Descent's: the camera is not the player. It
 // trails the player's transform on a spring, and the spring gets heavier as you
@@ -36,22 +36,22 @@ export const TUNING = {
 	substep: 1 / 64,
 	radius: 0.34,
 
-	// Descent's own numbers, verbatim. thrustScale 1.0 means PLAYER_MAX_THRUST is
-	// applied unscaled, which gives Descent's real terminal velocity of ~57 u/s:
-	//     v = (v + thrust/mass) * (1 - drag)  ->  v = 1.95 * 0.967 / 0.033
-	// This room is 28m end to end, so that is about half a second corner to
-	// corner. Dial `thrust` down if you want the room to feel larger; 0.145 was
-	// the previous value and reads at roughly walking-a-building pace.
-	thrustScale: 1.0,
+	// Dialled in by hand against this room rather than inherited. thrustScale 1.0
+	// is Descent's unscaled thrust and gives its real ~57 u/s terminal velocity,
+	// which crosses this 28m room in half a second; 0.47 is about half that and
+	// is what the room actually plays at.
+	thrustScale: 0.47,
 	burnMultiplier: 1.9,
-	// Both of these are three-descent's values. mouseSensitivity in particular was
-	// 0.9 here against three-descent's 0.02 — 45x too sensitive, which is the
-	// entire reason rotation felt wrong.
+	// three-descent's ROLL_THRUST_SCALE, unchanged.
 	rollThrustScale: 1.6,
-	// Keyboard pitch/yaw at full rated rotational thrust — terminal ~59 deg/s,
-	// which is a turn you can hold and stop on a mark.
-	keyRotScale: 1.0,
-	mouseSensitivity: 0.02,
+	// Keyboard pitch/yaw. At 1.0 this is full rated rotational thrust (~59 deg/s
+	// terminal); 2.15 is a turn brisk enough to be worth reaching for instead of
+	// the mouse.
+	keyRotScale: 2.15,
+	// three-descent runs 0.02. That is correct for its scale and far too slow
+	// here, where the room is small and you are turning constantly — 0.35 is the
+	// tested value. Anything near 0.9, which this started at, is unusable.
+	mouseSensitivity: 0.35,
 	invertY: false,
 
 	cameraLag: 0.045,        // seconds of positional trail at zero load

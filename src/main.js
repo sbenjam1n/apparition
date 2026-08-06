@@ -246,7 +246,7 @@ gFlight.add( TUNING, 'thrustScale', 0.02, 0.6, 0.005 ).name( 'thrust' );
 gFlight.add( TUNING, 'drag', 0.005, 0.12, 0.001 ).name( 'drag' );
 gFlight.add( TUNING, 'recoilMass', 10, 300, 5 ).name( 'recoil mass (kg)' );
 gFlight.add( TUNING, 'burnMultiplier', 1, 4, 0.05 ).name( 'burn x' );
-gFlight.add( TUNING, 'mouseSensitivity', 0.15, 3, 0.05 ).name( 'mouse' );
+gFlight.add( TUNING, 'mouseSensitivity', 0.01, 2, 0.01 ).name( 'mouse' );
 gFlight.add( TUNING, 'rollThrustScale', 0.5, 5, 0.1 ).name( 'roll' );
 gFlight.add( TUNING, 'keyRotScale', 0.1, 4, 0.05 ).name( 'arrow-key rotation' );
 gFlight.add( TUNING, 'wiggle', 0, 3, 0.05 ).name( 'wiggle' );
@@ -337,6 +337,130 @@ gPerf.add( quality, 'auto' ).name( 'auto governor' );
 gPerf.add( quality, 'tier', 0, TIERS.length - 1, 1 ).name( 'tier' ).listen().onChange( applyTier );
 gPerf.add( audio, 'enabled' ).name( 'audio' );
 gPerf.add( { gpu: quality.gpu }, 'gpu' ).name( 'gpu' ).disable();
+
+
+// --- tuning export ----------------------------------------------------------
+//
+// Everything worth turning lives in a plain object somewhere, so a snapshot is
+// just a walk over a declared list. The baseline is captured at boot and the
+// export reports only what has moved, which is what makes it paste-ready: the
+// output is the diff between the build and what you actually dialled, in a form
+// that can go straight back into source.
+
+const TUNE_GROUPS = [
+	[ 'TUNING', TUNING, [ 'thrustScale', 'burnMultiplier', 'drag', 'recoilMass', 'wiggle',
+		'mouseSensitivity', 'rollThrustScale', 'keyRotScale', 'invertY',
+		'autoLevel', 'autoLevelRate',
+		'cameraLag', 'cameraLagPerKg', 'cameraLagMax', 'rotationLag', 'swayAmount' ] ],
+	[ 'TK', TK, [ 'reachRadius', 'orbitBase', 'orbitPerItem', 'maxHeld', 'servoStiffness',
+		'throwSpeed', 'throwBudget', 'holdWattsPerKg', 'accelWattsPerKg' ] ],
+	[ 'solver', solver, [ 'iterations', 'beta', 'alpha', 'gamma', 'postStabilize',
+		'sleepTime', 'gravity', 'maxSubsteps', 'maxTravel', 'creepRate' ] ],
+	[ 'POST', POST, [ 'bloomStrength', 'bloomThreshold', 'bloomRadius',
+		'grain', 'vignette', 'scanline', 'exposure' ] ],
+	[ 'dust', dust, [ 'densityDecay' ] ]
+];
+
+const TUNE_UNIFORMS = [ 'uFogDensity', 'uFogHeightFalloff', 'uVolumetricGain',
+	'uCausticStrength', 'uCausticScale', 'uFogColor', 'uAmbient',
+	'uWarpAmount', 'uWarpScale', 'uShockThickness' ];
+
+function readTuning() {
+
+	const out = [];
+
+	for ( const [ label, obj, keys ] of TUNE_GROUPS ) {
+
+		for ( const k of keys ) out.push( [ `${label}.${k}`, obj[ k ] ] );
+
+	}
+
+	for ( const u of TUNE_UNIFORMS ) {
+
+		const v = rig.uniforms[ u ].value;
+		out.push( [ `rig.uniforms.${u}.value`, v && v.isColor ? `#${v.getHexString()}` : v ] );
+
+	}
+
+	out.push( [ 'camera.fov', camera.fov ] );
+	out.push( [ 'dust.material.uniforms.uOpacity.value', dust.material.uniforms.uOpacity.value ] );
+	return out;
+
+}
+
+const TUNE_BASELINE = new Map( readTuning() );
+
+function formatTuning() {
+
+	const now = readTuning();
+	const changed = now.filter( ( [ k, v ] ) => TUNE_BASELINE.get( k ) !== v );
+	const rows = changed.length ? changed : now;
+	const width = rows.reduce( ( w, [ k ] ) => Math.max( w, k.length ), 0 );
+
+	const lines = rows.map( ( [ k, v ] ) => {
+
+		// Colours are objects, so they are emitted as a call rather than an
+		// assignment — `.value` stays on the path, it is not stripped.
+		if ( typeof v === 'string' ) return `${k}.set( '${v}' );`;
+		const val = typeof v === 'number' ? String( + v.toFixed( 5 ) ) : String( v );
+		return `${k.padEnd( width )} = ${val};`;
+
+	} );
+
+	const header = changed.length
+		? `// APPARITION tuning — ${changed.length} changed from build defaults`
+		: '// APPARITION tuning — nothing changed from build defaults; full snapshot';
+
+	return `${header}\n${lines.join( '\n' )}\n`;
+
+}
+
+const toast = document.getElementById( 'toast' );
+let toastTimer = 0;
+
+function showToast( text ) {
+
+	toast.textContent = text;
+	toast.classList.add( 'show' );
+	clearTimeout( toastTimer );
+	toastTimer = setTimeout( () => toast.classList.remove( 'show' ), 1600 );
+
+}
+
+function copyTuning() {
+
+	const text = formatTuning();
+	// Always log it too. The clipboard can be refused by the browser for reasons
+	// that have nothing to do with this build, and losing a tuning pass to that
+	// would be worse than the inconvenience of reading it out of the console.
+	console.log( text );
+
+	const done = () => showToast( `copied — ${text.split( '\n' ).length - 2} values` );
+
+	const fallback = () => {
+
+		const ta = document.createElement( 'textarea' );
+		ta.value = text;
+		ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+		document.body.appendChild( ta );
+		ta.select();
+
+		try { document.execCommand( 'copy' ); done(); }
+		catch ( e ) { showToast( 'clipboard blocked — printed to console' ); }
+
+		ta.remove();
+
+	};
+
+	if ( navigator.clipboard && isSecureContext ) {
+
+		navigator.clipboard.writeText( text ).then( done, fallback );
+
+	} else fallback();
+
+}
+
+gui.add( { copy: copyTuning }, 'copy' ).name( 'copy tuning to clipboard (P)' );
 
 const actions = {
 	respawnPanels() {
@@ -438,6 +562,7 @@ function frame() {
 	state.probe = input.pressed( 'probe' );
 	state.releaseOrbit = input.pressed( 'releaseOrbit' );
 	if ( input.pressed( 'reset' ) ) flight.reset();
+	if ( input.pressed( 'copyTuning' ) ) copyTuning();
 
 	if ( input.locked ) {
 
@@ -526,4 +651,5 @@ addEventListener( 'resize', () => {
 frame();
 
 // Exposed for console poking during tuning.
-window.APPARITION = { solver, rig, flight, telekinesis, destruction, debris, dust, panels, quality, post, TUNING, TK, POST };
+window.APPARITION = { solver, rig, flight, telekinesis, destruction, debris, dust, panels, quality, post,
+	TUNING, TK, POST, copyTuning, readTuning, formatTuning };
