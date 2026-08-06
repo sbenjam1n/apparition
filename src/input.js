@@ -12,10 +12,17 @@ const DEFAULTS = {
 	left: [ 'KeyA' ],
 	right: [ 'KeyD' ],
 	up: [ 'Space' ],
-	down: [ 'ControlLeft', 'ControlRight', 'KeyC' ],
+	down: [ 'ShiftLeft', 'ShiftRight', 'KeyC' ],
 	rollLeft: [ 'KeyQ' ],
 	rollRight: [ 'KeyE' ],
-	burn: [ 'ShiftLeft', 'ShiftRight' ],
+	// Arrow keys drive pitch and yaw. Descent bound rotation to the keyboard as
+	// well as the stick, and it matters here for the same reason: you cannot
+	// hold a slow, exact turn with a mouse.
+	pitchUp: [ 'ArrowUp' ],
+	pitchDown: [ 'ArrowDown' ],
+	yawLeft: [ 'ArrowLeft' ],
+	yawRight: [ 'ArrowRight' ],
+	burn: [ 'ControlLeft', 'ControlRight' ],
 	probe: [ 'KeyF' ],
 	releaseOrbit: [ 'KeyR' ],
 	reset: [ 'KeyG' ]
@@ -39,6 +46,7 @@ export class Input {
 		this.state = {
 			forward: false, back: false, left: false, right: false,
 			up: false, down: false, rollLeft: false, rollRight: false,
+			pitchUp: false, pitchDown: false, yawLeft: false, yawRight: false,
 			burn: false, mouseX: 0, mouseY: 0
 		};
 
@@ -50,6 +58,7 @@ export class Input {
 			// Never swallow the browser's own escapes.
 			if ( e.code === 'F5' || e.code === 'F12' || ( e.metaKey || e.ctrlKey ) && e.code === 'KeyR' ) return;
 			this.keys[ e.code ] = true;
+			if ( e.code.startsWith( 'Arrow' ) || e.code === 'Space' ) e.preventDefault();
 			if ( this.locked && e.code !== 'Tab' ) e.preventDefault();
 
 		} );
@@ -88,6 +97,11 @@ export class Input {
 
 			this.locked = document.pointerLockElement === domElement;
 			gate.classList.toggle( 'hidden', this.locked );
+			// Once you have flown once you do not need the key list again. From
+			// here the gate is a hint, not a curtain — it stops covering the scene
+			// and stops swallowing clicks, so Escape gives you the cursor over a
+			// running world with the tuning panel usable.
+			if ( this.locked ) gate.classList.add( 'compact' );
 			if ( ! this.locked ) this.keys = Object.create( null );
 
 		} );
@@ -138,6 +152,10 @@ export class Input {
 		s.down = this.down( 'down' );
 		s.rollLeft = this.down( 'rollLeft' );
 		s.rollRight = this.down( 'rollRight' );
+		s.pitchUp = this.down( 'pitchUp' );
+		s.pitchDown = this.down( 'pitchDown' );
+		s.yawLeft = this.down( 'yawLeft' );
+		s.yawRight = this.down( 'yawRight' );
 		s.burn = this.down( 'burn' );
 
 		s.mouseX = this.mouseX;

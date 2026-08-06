@@ -32,17 +32,19 @@ requirement is a browser with WebGL2. Click to lock the pointer.
 | | |
 |---|---|
 | `W A S D` | thrust / strafe |
-| `Space` / `Ctrl` | thrust up / down |
+| `Space` / `Shift` | thrust up / down |
 | `Q` `E` | roll |
 | mouse | pitch / yaw |
-| `Shift` | burn — more thrust, more heat |
+| arrow keys | pitch / yaw — held and exact |
+| `Ctrl` | burn — extra thrust |
 | `LMB` | grab and hold; objects orbit you |
 | `RMB` | throw the orbit (recoil applies) |
 | `R` | release the orbit gently |
 | `F` | probe — reads mass, material, structural weakness |
 | wheel | dilation dial |
 | `G` | reset position |
-| `Tab` | tuning panel |
+| `Tab` | show / hide the tuning panel |
+| `Esc` | release the cursor — the scene keeps running and the panel stays live |
 
 **Open the tuning panel.** Feel cannot be judged from someone else's numbers, and
 the panel is the actual instrument here — the rest of the build is apparatus

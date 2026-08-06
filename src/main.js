@@ -8,9 +8,12 @@
 //
 // What is deliberately absent: enemies, objectives, annexation, containment,
 // humans, and any economy that would let a bad flight model hide behind a good
-// system. The watt and heat meters are present because destruction and
-// telekinesis need *some* cost to feel weighted, and because a feel test that
-// cannot show you the cost curve cannot be tuned.
+// system. The draw meter is present because telekinesis needs *some* cost to
+// feel weighted and because a feel test that cannot show you its cost curve
+// cannot be tuned. Thermal debt (§5.3) is computed and drives bloom, but it is
+// deliberately not on the readout: nothing in this build has a consequence that
+// depends on it, and a meter that moves without meaning anything is worse than
+// no meter.
 
 import * as THREE from 'three';
 import { GUI } from 'lil-gui';
@@ -245,6 +248,7 @@ gFlight.add( TUNING, 'recoilMass', 10, 300, 5 ).name( 'recoil mass (kg)' );
 gFlight.add( TUNING, 'burnMultiplier', 1, 4, 0.05 ).name( 'burn x' );
 gFlight.add( TUNING, 'mouseSensitivity', 0.15, 3, 0.05 ).name( 'mouse' );
 gFlight.add( TUNING, 'rollThrustScale', 0.5, 5, 0.1 ).name( 'roll' );
+gFlight.add( TUNING, 'keyRotScale', 0.1, 4, 0.05 ).name( 'arrow-key rotation' );
 gFlight.add( TUNING, 'wiggle', 0, 3, 0.05 ).name( 'wiggle' );
 gFlight.add( TUNING, 'autoLevel' ).name( 'auto-level' );
 gFlight.add( TUNING, 'autoLevelRate', 0, 3, 0.05 ).name( 'auto-level rate' );
@@ -365,8 +369,19 @@ gui.add( actions, 'activatePanels' ).name( 'activate panels' );
 gui.add( actions, 'clearDebris' ).name( 'clear debris' );
 gui.add( actions, 'relight' ).name( 'restore lighting' );
 
-gui.close();
-let guiOpen = false;
+// Open, with the lighting folder expanded and the rest collapsed. Lighting is
+// the thing you actually want to watch change while you drag it, and a panel you
+// have to go find is a panel nobody opens.
+gFlight.close();
+gCam.close();
+gTk.close();
+gPhys.close();
+gJoint.close();
+gWarp.close();
+gDust.close();
+gPerf.close();
+gLook.open();
+let guiOpen = true;
 
 addEventListener( 'keydown', e => {
 
@@ -477,7 +492,6 @@ function frame() {
 		contacts: solver.stats.contacts,
 		substeps: solver.stats.substeps,
 		watts: telekinesis.watts,
-		heat: telekinesis.heat,
 		wattScale: TK.wattScale,
 		panels: panels.map( p => ( {
 			state: PANEL_STATE_NAME[ p.state ],

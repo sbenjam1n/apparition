@@ -9,16 +9,16 @@
 // Constants come from the PLAYER_SHIP entry in Descent's bitmaps.bin, by way of
 // mrdoob's three.js port (MIT): https://github.com/mrdoob/three-descent
 //
-// Two things are ours rather than Descent's:
+// Every tuning number below is three-descent's, unscaled — thrust, drag, mouse
+// sensitivity, roll scale. The room is 28m end to end and Descent's terminal
+// velocity is ~57 u/s, so it crosses in about half a second. That is the real
+// Descent feel and it is deliberately the default; `thrust` in the tuning panel
+// is the one dial to turn if you want the room to read as larger.
 //
-//   * Thrust is scaled down hard. Descent's terminal velocity crosses a mine
-//     segment in a blink; this room is 28m end to end and the whole point of the
-//     project is the woman taking forty seconds to turn a doorknob (§42.5). The
-//     drag/substep *shape* is untouched — only the magnitude moves.
-//   * The camera is not the player. It trails the player's transform on a
-//     spring, and the spring gets heavier as you carry more. A viewpoint that
-//     lags input has mass, and mass reads as embodiment (§47.2) — which is the
-//     only body this character is ever going to get.
+// One thing is ours rather than Descent's: the camera is not the player. It
+// trails the player's transform on a spring, and the spring gets heavier as you
+// carry more. A viewpoint that lags input has mass, and mass reads as embodiment
+// (§47.2) — which is the only body this character is ever going to get.
 
 import * as THREE from 'three';
 
@@ -36,10 +36,22 @@ export const TUNING = {
 	substep: 1 / 64,
 	radius: 0.34,
 
-	thrustScale: 0.145,      // terminal ≈ 8.3 m/s at rest, ≈ 14 on burn
+	// Descent's own numbers, verbatim. thrustScale 1.0 means PLAYER_MAX_THRUST is
+	// applied unscaled, which gives Descent's real terminal velocity of ~57 u/s:
+	//     v = (v + thrust/mass) * (1 - drag)  ->  v = 1.95 * 0.967 / 0.033
+	// This room is 28m end to end, so that is about half a second corner to
+	// corner. Dial `thrust` down if you want the room to feel larger; 0.145 was
+	// the previous value and reads at roughly walking-a-building pace.
+	thrustScale: 1.0,
 	burnMultiplier: 1.9,
-	rollThrustScale: 2.2,
-	mouseSensitivity: 0.9,
+	// Both of these are three-descent's values. mouseSensitivity in particular was
+	// 0.9 here against three-descent's 0.02 — 45x too sensitive, which is the
+	// entire reason rotation felt wrong.
+	rollThrustScale: 1.6,
+	// Keyboard pitch/yaw at full rated rotational thrust — terminal ~59 deg/s,
+	// which is a turn you can hold and stop on a mark.
+	keyRotScale: 1.0,
+	mouseSensitivity: 0.02,
 	invertY: false,
 
 	cameraLag: 0.045,        // seconds of positional trail at zero load
@@ -166,9 +178,21 @@ export class Flight {
 
 		this._substepLinear( _thrust, dt );
 
-		_tmp.copy( this.velocity ).multiplyScalar( dt );
-		this.position.add( _tmp );
-		this._resolveCollisions();
+		// Collision is a discrete push-out, not a sweep, so at Descent's real
+		// terminal velocity one frame carries you nearly a metre and the thinner
+		// static boxes get tunnelled. Subdivide the move instead — it is only a
+		// handful of plane tests per step.
+		const travel = this.velocity.length() * dt;
+		const k = Math.min( 8, Math.max( 1, Math.ceil( travel / 0.15 ) ) );
+		const h = dt / k;
+
+		for ( let n = 0; n < k; n ++ ) {
+
+			_tmp.copy( this.velocity ).multiplyScalar( h );
+			this.position.add( _tmp );
+			this._resolveCollisions();
+
+		}
 
 		this._updateView( dt, input );
 
@@ -183,8 +207,17 @@ export class Flight {
 
 		// Mouse delta is a rotational *thrust*, not a rotation. It goes through
 		// the same drag as everything else, which is why the look has weight.
-		const mx = - input.mouseX * T.mouseSensitivity * base * 3.2;
-		const my = ( T.invertY ? 1 : - 1 ) * input.mouseY * T.mouseSensitivity * base * 3.2;
+		let mx = - input.mouseX * T.mouseSensitivity * base * 3.2;
+		let my = ( T.invertY ? 1 : - 1 ) * input.mouseY * T.mouseSensitivity * base * 3.2;
+
+		// Arrows add to the same rotational thrust the mouse feeds, so they go
+		// through the same drag and the two can be used together.
+		const kr = base * T.keyRotScale;
+		const sign = T.invertY ? - 1 : 1;
+		if ( input.pitchUp ) my += kr * sign;
+		if ( input.pitchDown ) my -= kr * sign;
+		if ( input.yawLeft ) mx += kr;
+		if ( input.yawRight ) mx -= kr;
 
 		let rz = 0;
 		if ( input.rollLeft ) rz += base * T.rollThrustScale;

@@ -65,7 +65,6 @@ export class Hud {
 
 		}
 
-		const heatBar = this._bar( data.heat / 100, 18 );
 		const wattBar = this._bar( Math.min( 1, data.watts / data.wattScale ), 18 );
 
 		this.el.innerHTML =
@@ -73,7 +72,6 @@ export class Hud {
 			`bodies <b>${data.active}</b> awake  <b>${data.asleep}</b> settled  <b>${data.contacts}</b> contacts  x<b>${data.substeps}</b>\n` +
 			`\n` +
 			`draw   ${wattBar} <b>${data.watts.toFixed( 0 ).padStart( 4 )}</b> W\n` +
-			`heat   ${heatBar} <b>${data.heat.toFixed( 0 ).padStart( 4 )}</b>\n` +
 			`held   <b>${data.held}</b>  ${data.load.toFixed( 1 )} kg\n` +
 			`speed  <b>${data.speed.toFixed( 1 )}</b> m/s${data.dilation > 0.01 ? `   <span class="warn">dilated 1:${( 1 / Math.max( 0.02, 1 - data.dilation ) ).toFixed( 0 )}</span>` : '' }\n` +
 			`light  ${this._bar( data.light, 18 )} <b>${( data.light * 100 ).toFixed( 0 )}</b>%\n` +

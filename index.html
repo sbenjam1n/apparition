@@ -39,6 +39,19 @@
 			border-radius: 3px; color: #cfe8f5; margin: 0 1px;
 		}
 		#gate.hidden { display: none; }
+
+		/* After the first lock the gate stops being a wall. Escape should hand you
+		   the cursor over a live scene so the tuning sliders can be dragged while
+		   watching, not cover the thing you are trying to look at. */
+		#gate.compact { background: none; pointer-events: none; gap: 0; }
+		#gate.compact .full { display: none; }
+		#gate.compact .resume {
+			position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%);
+			opacity: .5;
+		}
+		.resume { margin: 0; }
+		#gate:not(.compact) .resume { opacity: .9; }
+		.full { display: flex; flex-direction: column; align-items: center; gap: 22px; }
 		.keys { display: grid; grid-template-columns: auto auto; gap: 3px 18px; opacity: .8; }
 		.keys i { font-style: normal; color: #cfe8f5; text-align: right; }
 	</style>
@@ -57,22 +70,25 @@
 	<div id="reticle"></div>
 
 	<div id="gate">
-		<h1>APPARITION</h1>
-		<p>Feel test 01 — six degrees of freedom, telekinesis, and a wall that comes apart.
-		   Nothing else is running.</p>
-		<div class="keys">
-			<i>W A S D</i><span>thrust / strafe</span>
-			<i>Space / Ctrl</i><span>thrust up / down</span>
-			<i>Q E</i><span>roll</span>
-			<i>mouse</i><span>pitch / yaw</span>
-			<i>Shift</i><span>burn (more thrust, more heat)</span>
-			<i>LMB</i><span>grab &amp; hold — objects orbit you</span>
-			<i>RMB</i><span>throw the orbit (recoil applies)</span>
-			<i>F</i><span>probe — reads mass and weakness</span>
-			<i>R</i><span>release the orbit gently</span>
-			<i>Tab</i><span>tuning panel</span>
+		<div class="full">
+			<h1>APPARITION</h1>
+			<p>Feel test 01 — six degrees of freedom, telekinesis, and a wall that comes apart.
+			   Nothing else is running.</p>
+			<div class="keys">
+				<i>W A S D</i><span>thrust / strafe</span>
+				<i>Space / Shift</i><span>thrust up / down</span>
+				<i>Q E</i><span>roll</span>
+				<i>mouse</i><span>pitch / yaw</span>
+				<i>arrows</i><span>pitch / yaw, held and exact</span>
+				<i>Ctrl</i><span>burn — extra thrust</span>
+				<i>LMB</i><span>grab &amp; hold — objects orbit you</span>
+				<i>RMB</i><span>throw the orbit (recoil applies)</span>
+				<i>F</i><span>probe — reads mass and weakness</span>
+				<i>R</i><span>release the orbit gently</span>
+				<i>Esc</i><span>cursor out — panel stays live</span>
+			</div>
 		</div>
-		<p><kbd>click to begin</kbd></p>
+		<p class="resume"><kbd>click to fly</kbd></p>
 	</div>
 
 	<script type="module" src="./src/main.js"></script>
