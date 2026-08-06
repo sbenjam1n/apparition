@@ -34,10 +34,22 @@ import { MATERIAL_KIND } from './room.js';
 export const ACC = {
 
 	// --- the funnel ---------------------------------------------------------
-	reach: 7.5,              // how far down the axis the mouth extends
+	// Reach and intake were 7.5m and 90 m/s², and both were too small to read as
+	// force. A bench took three seconds to peel off the floor, which is a machine
+	// working, not a thing being taken. Longer and much harder: opening the funnel
+	// should make the far side of the room start moving, and the extra length is
+	// what keeps the release window open now that everything arrives faster.
+	reach: 11.0,             // how far down the axis the mouth extends
 	mouthAngle: 0.62,        // half-angle of the cone, radians (~35°)
 	horizon: 0.95,           // consumed inside this radius, always live
-	intake: 90.0,            // m/s² of pull on the axis at the apex
+	intake: 220.0,           // m/s² of pull on the axis at the apex
+	// Newton's third law on the pull. §3.4 already governs the recoil of a throw
+	// and there is no reason the intake should be exempt: hauling on 400kg of
+	// bench hauls back, and that reaction is most of what separates a force from
+	// a field. Clamped rather than scaled, because the raw reaction to the near
+	// field is several hundred m/s² and would fire the player across the room.
+	reaction: 1.0,           // 0 disables; 1 is the full clamped reaction
+	reactionCeiling: 1100,   // N, the most the funnel can ever pull back with
 	// Swirl and viscosity are one setting in two numbers and must be read
 	// together. Swept as a pair: swirl buys turns and costs capture, viscosity
 	// buys capture back. At 0.62/3 the funnel catches 13% of what enters it; at
@@ -57,16 +69,26 @@ export const ACC = {
 	// --- the pool -----------------------------------------------------------
 	capacity: 900,           // kg; full means the horizon stops eating
 	carryWattsPerKg: 0.02,   // standing charge on what you carry
-	intakeWattsPerKg: 0.08,  // §8.3, the expensive half
+	// Rescaled with the pull. At 0.08 against a 220 m/s² intake the meter
+	// pegged the moment the funnel touched anything heavy, which makes it a
+	// light rather than a curve — and the whole reason the draw readout is in
+	// this build is that a feel test that cannot show its cost curve cannot be
+	// tuned. The shape of §8.3 is unchanged; only the constant moved.
+	intakeWattsPerKg: 0.035, // §8.3, the expensive half
 
 	// --- firing -------------------------------------------------------------
-	fireSpeed: 16.0,
-	// A fixed impulse budget per shot, shared across the burst. This one number
-	// is the difference between a toy and the design: a spray of glass leaves
-	// fast and barely moves you, while a slug of concrete eats the whole budget,
-	// goes slow, and shoves *you* backward hard (§3.4).
-	fireBudget: 900,         // N·s
-	fireMass: 25,            // kg drawn per shot
+	// 16 m/s was a lob. It crossed the room in a second and a quarter, and a body
+	// you had merely pulled in and released left faster than one you fired — which
+	// is exactly backwards. 40 m/s is a projectile, and because panel damage is
+	// billed in joules rather than newton-seconds, the speed does far more work
+	// than the mass: one concrete slug now carries ~9.4kJ against a panel
+	// activation threshold of 3.7kJ, where the old shot fell short of it.
+	fireSpeed: 40.0,
+	// The impulse budget is a ceiling for the pathological case, not the operating
+	// point. It used to bind on every shot, which flattened all four materials to
+	// the same recoil; per-shot mass is the thing that should set the kick.
+	fireBudget: 1400,        // N·s
+	fireMass: 15,            // kg drawn per shot
 	maxBurst: 24,
 	fireSpin: 1.4,
 	fireSpread: 0.07,
@@ -75,7 +97,7 @@ export const ACC = {
 	// --- readout ------------------------------------------------------------
 	ventRate: 3.4,
 	heatCeiling: 100,
-	wattScale: 600
+	wattScale: 1000
 
 };
 
@@ -84,11 +106,16 @@ export const ACC = {
 // count, different momentum per hit, different damage. This is the only place
 // the four materials mean anything mechanically, and it is why the pool is per
 // material rather than one number.
+//
+// Sizes came down when the muzzle velocity went up. The grain is what quantises
+// a shot — a 25kg concrete lump meant fireMass could not be set below 25kg for
+// concrete at all, so raising the speed raised the recoil with nothing to trade
+// against it. Smaller pieces make the per-shot mass a real dial again.
 const GRAIN = [
-	{ half: 0.075, density: 2.4 },   // tile
-	{ half: 0.110, density: 2.4 },   // concrete
-	{ half: 0.045, density: 2.5 },   // glass
-	{ half: 0.060, density: 7.8 }    // steel
+	{ half: 0.065, density: 2.4 },   // tile      5.3 kg
+	{ half: 0.085, density: 2.4 },   // concrete 11.8 kg
+	{ half: 0.045, density: 2.5 },   // glass     1.8 kg
+	{ half: 0.048, density: 7.8 }    // steel     6.9 kg
 ];
 
 export const MATERIAL_NAME = [ 'tile', 'concrete', 'glass', 'steel' ];
@@ -123,6 +150,7 @@ export class Accretion {
 		this.consumed = 0;          // lifetime count, for the readout
 		this.stalled = false;       // horizon refused something for want of room
 		this.lastFireSpeed = 0;
+		this.reactionN = 0;       // newtons the funnel is pulling back with
 
 		this.probeTarget = - 1;
 		this.probeInfo = null;
@@ -247,6 +275,11 @@ export class Accretion {
 		const tanA = Math.tan( ACC.mouthAngle );
 		const horizon2 = ACC.horizon * ACC.horizon;
 
+		// Reaction accumulator. Summed over everything the funnel touches and
+		// applied once, so the clamp is on the total rather than per body — a
+		// hundred shards should not out-pull one bench.
+		let rfx = 0, rfy = 0, rfz = 0;
+
 		for ( let i = 0; i < s.count; i ++ ) {
 
 			if ( s.state[ i ] === 0 ) continue;
@@ -356,6 +389,13 @@ export class Accretion {
 
 			this.watts += s.mass[ i ] * ul * ACC.intakeWattsPerKg * theft;
 
+			// Third law. The force the funnel puts into this body is force it is
+			// also putting into you, and mass enters here even though it does not
+			// enter the acceleration — which is the point. A shard is nothing to
+			// haul on; a 430kg bench hauls back hard enough to move you.
+			const fm = s.mass[ i ];
+			rfx -= ux * fm; rfy -= uy * fm; rfz -= uz * fm;
+
 			s.vx[ i ] += ux * dt;
 			s.vy[ i ] += uy * dt;
 			s.vz[ i ] += uz * dt;
@@ -394,6 +434,26 @@ export class Accretion {
 			this.debris.setHeat( i, Math.min( 1, 0.18 + wr * 0.5 + theft * 0.4 ) );
 
 		}
+
+		// Apply the accumulated reaction, clamped as a whole. Near the apex the
+		// raw figure runs to tens of kN and would fire the player across the room;
+		// the ceiling is what keeps this a lean rather than a launch, and it is a
+		// slider because it is the one number that decides whether the funnel is
+		// also a movement tool.
+		if ( ACC.reaction > 0 ) {
+
+			const rf = Math.sqrt( rfx * rfx + rfy * rfy + rfz * rfz );
+
+			if ( rf > 1e-3 ) {
+
+				const q = ACC.reaction * Math.min( rf, ACC.reactionCeiling ) / rf * dt;
+				this.flight.applyImpulse( rfx * q, rfy * q, rfz * q );
+
+			}
+
+			this.reactionN = rf;
+
+		} else this.reactionN = 0;
 
 		// --- fire / vent --------------------------------------------------------
 

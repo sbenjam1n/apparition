@@ -143,12 +143,23 @@ destruction.onStateChange = ( panel, prev ) => {
 
 };
 
-// Consumption is silent geometry unless it is heard. A short material-coloured
-// tick per body eaten is enough to tell a bench from a shard without a readout.
+// Consumption is silent geometry unless it is heard. A material-coloured hit per
+// body eaten tells a bench from a shard without a readout, and anything with
+// real mass in it also has to land in the room — the fourth register (§48.3),
+// shape only, no colour. Without this the funnel swallowed a 430kg bench with
+// the same weight of feedback as a floor tile, which is most of why it read as
+// limp no matter how hard it pulled.
 accretion.onConsume = ( kind, mass, x, y, z ) => {
 
-	audio.impact( 0.5 + Math.min( 3.2, mass * 0.02 ), kind, 0 );
-	dust.puff( x, y, z, 220 + mass * 3, 0, 1, 0 );
+	audio.impact( 1.4 + Math.min( 6, mass * 0.055 ), kind, 0 );
+	dust.puff( x, y, z, 420 + mass * 6, 0, 1, 0 );
+
+	if ( mass > 55 ) {
+
+		rig.shockwave( x, y, z, Math.min( 0.13, 0.03 + mass * 0.00018 ), 9, 17 );
+		for ( const s of rig.strips ) rig.pulse( s, Math.min( 0.34, mass * 0.0006 ) );
+
+	}
 
 };
 
@@ -273,10 +284,14 @@ gCam.add( TUNING, 'swayAmount', 0, 3, 0.05 ).name( 'sway' );
 gCam.add( camera, 'fov', 55, 110, 1 ).name( 'fov' ).onChange( () => camera.updateProjectionMatrix() );
 
 const gAcc = gui.addFolder( 'Accretion (funnel)' );
-gAcc.add( ACC, 'reach', 2, 20, 0.5 ).name( 'reach (m)' );
+gAcc.add( ACC, 'reach', 2, 24, 0.5 ).name( 'reach (m)' );
 gAcc.add( ACC, 'mouthAngle', 0.1, 1.3, 0.01 ).name( 'mouth half-angle' );
 gAcc.add( ACC, 'horizon', 0.3, 4, 0.05 ).name( 'event horizon (m)' );
-gAcc.add( ACC, 'intake', 0, 80, 0.5 ).name( 'pull (m/s²)' );
+gAcc.add( ACC, 'intake', 0, 500, 5 ).name( 'pull (m/s²)' );
+// Third law on the intake. At zero the funnel is a free force; at one, hauling
+// on a bench hauls back and the funnel doubles as a movement system.
+gAcc.add( ACC, 'reaction', 0, 2, 0.05 ).name( 'reaction (§3.4)' );
+gAcc.add( ACC, 'reactionCeiling', 0, 4000, 50 ).name( 'reaction cap (N)' );
 gAcc.add( ACC, 'swirl', 0, 0.95, 0.01 ).name( 'swirl' );
 // Turn this to zero and the funnel becomes a merry-go-round: swirl with no
 // viscosity conserves angular momentum exactly and nothing ever falls in.
@@ -287,9 +302,9 @@ gAcc.add( ACC, 'viscosity', 0, 12, 0.1 ).name( 'viscosity (1/s)' );
 gAcc.add( ACC, 'axisLag', 0, 0.5, 0.005 ).name( 'axis lag (s)' );
 gAcc.add( ACC, 'freeSpeed', 1, 30, 0.5 ).name( 'free speed (§10.2)' );
 gAcc.add( ACC, 'capacity', 100, 4000, 25 ).name( 'capacity (kg)' );
-gAcc.add( ACC, 'fireSpeed', 2, 40, 0.5 ).name( 'fire speed' );
-gAcc.add( ACC, 'fireBudget', 100, 4000, 25 ).name( 'fire budget (N·s)' );
-gAcc.add( ACC, 'fireMass', 5, 400, 5 ).name( 'kg per shot' );
+gAcc.add( ACC, 'fireSpeed', 2, 90, 1 ).name( 'fire speed (m/s)' );
+gAcc.add( ACC, 'fireBudget', 100, 6000, 25 ).name( 'fire budget (N·s)' );
+gAcc.add( ACC, 'fireMass', 2, 400, 1 ).name( 'kg per shot' );
 gAcc.add( ACC, 'maxBurst', 1, 32, 1 ).name( 'max pieces / shot' );
 gAcc.add( ACC, 'carryWattsPerKg', 0, 0.2, 0.002 ).name( 'W per kg carried' );
 gAcc.add( ACC, 'intakeWattsPerKg', 0, 0.6, 0.005 ).name( 'W per kg·a' );
@@ -378,7 +393,8 @@ const TUNE_GROUPS = [
 		'mouseSensitivity', 'rollThrustScale', 'keyRotScale', 'invertY',
 		'autoLevel', 'autoLevelRate',
 		'cameraLag', 'cameraLagPerKg', 'cameraLagMax', 'rotationLag', 'swayAmount' ] ],
-	[ 'ACC', ACC, [ 'reach', 'mouthAngle', 'horizon', 'intake', 'swirl', 'viscosity', 'axisLag',
+	[ 'ACC', ACC, [ 'reach', 'mouthAngle', 'horizon', 'intake', 'reaction', 'reactionCeiling',
+		'swirl', 'viscosity', 'axisLag',
 		'freeSpeed', 'capacity', 'fireSpeed', 'fireBudget', 'fireMass', 'maxBurst',
 		'carryWattsPerKg', 'intakeWattsPerKg' ] ],
 	[ 'solver', solver, [ 'iterations', 'beta', 'alpha', 'gamma', 'postStabilize',

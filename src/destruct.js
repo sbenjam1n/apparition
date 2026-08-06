@@ -44,6 +44,7 @@ const ACTIVATION_THRESHOLD = 110;
 const OPEN_FRACTION = 0.45;
 
 const _p = new THREE.Vector3();
+const _d = new THREE.Vector3();
 
 class WeakPanel {
 
@@ -122,7 +123,7 @@ class WeakPanel {
 	}
 
 	// Slab test along a ray, for the probe.
-	raycast( origin, dir, maxDist ) {
+	raycast( origin, dir, maxDist, pad = 0 ) {
 
 		let tmin = 0, tmax = maxDist;
 
@@ -131,7 +132,7 @@ class WeakPanel {
 			const o = a === 0 ? origin.x : a === 1 ? origin.y : origin.z;
 			const d = a === 0 ? dir.x : a === 1 ? dir.y : dir.z;
 			const c = a === 0 ? this.center.x : a === 1 ? this.center.y : this.center.z;
-			const h = a === 0 ? this.half.x : a === 1 ? this.half.y : this.half.z;
+			const h = ( a === 0 ? this.half.x : a === 1 ? this.half.y : this.half.z ) + pad;
 
 			if ( Math.abs( d ) < 1e-6 ) {
 
@@ -151,6 +152,34 @@ class WeakPanel {
 		}
 
 		return tmin;
+
+	}
+
+	// Did this body cross the slab at any point during the step?
+	//
+	// The point test this replaces was fine while nothing moved faster than about
+	// 8 m/s. Firing at 40 changed that: a shot covers 0.67m per frame against a
+	// slab under 0.3m thick including the body radius, so it passed straight
+	// through an intact panel and did nothing at all. A fast shot that does no
+	// damage is the exact opposite of the thing speed was raised to buy.
+	crossed( px, py, pz, vx, vy, vz, dt, pad ) {
+
+		const mx = vx * dt, my = vy * dt, mz = vz * dt;
+		const len = Math.sqrt( mx * mx + my * my + mz * mz );
+
+		if ( len < 1e-6 ) {
+
+			_p.set( px, py, pz );
+			return this.contains( _p, pad );
+
+		}
+
+		// Cast backwards from where the body ended up, over the distance it
+		// covered, plus a little so a body that stopped inside still counts.
+		_p.set( px, py, pz );
+		_d.set( - mx / len, - my / len, - mz / len );
+		const t = this.raycast( _p, _d, len + pad, pad );
+		return t >= 0;
 
 	}
 
@@ -376,12 +405,14 @@ export class Destruction {
 
 				if ( s.state[ i ] !== 1 ) continue;
 
-				_p.set( s.px[ i ], s.py[ i ], s.pz[ i ] );
-				if ( ! p.contains( _p, s.radius[ i ] ) ) continue;
-
 				const n = p.normal;
 				const into = s.vx[ i ] * n.x + s.vy[ i ] * n.y + s.vz[ i ] * n.z;
 				if ( into > - 2.2 ) continue;
+
+				if ( ! p.crossed( s.px[ i ], s.py[ i ], s.pz[ i ],
+					s.vx[ i ], s.vy[ i ], s.vz[ i ], dt, s.radius[ i ] ) ) continue;
+
+				_p.set( s.px[ i ], s.py[ i ], s.pz[ i ] );
 
 				const energy = 0.5 * s.mass[ i ] * into * into;
 				p.damage += energy * DAMAGE_PER_JOULE;

@@ -94,11 +94,16 @@ fall out of that:
   it is consumed, whether or not you meant it. Fly into your own wreckage and it
   goes. It is also the only garbage collector this build has — consumed bodies
   leave the solver instead of piling up against its cap.
-- **The funnel is directional and lagged.** A cone opening from the horizon along
-  the look axis, with pull falling off toward the lip and toward the mouth.
-  Squaring the radial term is what gives the lip its softness, and the lip is
-  where holding happens. Gravity is deliberately *not* cancelled inside it, so
-  heavy things sag out of the edge on their own.
+- **The funnel is directional and lagged.** An 11m cone opening from the horizon
+  along the look axis, with pull falling off toward the lip and toward the mouth.
+  The falloff curve is what makes the lip soft without making the outer cone
+  dead, and the lip is where holding happens. Gravity is deliberately *not*
+  cancelled inside it, so heavy things sag out of the edge on their own.
+- **The pull pulls back.** §3.4 already governs the recoil of a throw and the
+  intake is not exempt: hauling on 430kg of bench hauls you toward it at 4 m/s.
+  The reaction is clamped rather than scaled — the raw figure near the apex is
+  tens of kN and would fire you across the room — and it is most of what
+  separates a force from a field.
 - **Swirl is not decoration.** Most of the pull is spent tangentially. Tangential
   speed is angular momentum and angular momentum is what keeps matter *out* of
   the horizon, so holding something at the lip is holding its orbit up.
@@ -109,31 +114,38 @@ something already doing 9 m/s your way is free. A body you pull halfway in and
 then let go of keeps every joule you gave it, which is the whole reason not to
 eat everything.
 
-Firing drains the pool along the axis. The material decides the *shape* of the
-shot rather than its recoil: the same 25 kg leaves as one concrete slug carrying
-400 N·s or as thirteen glass shards carrying 29 N·s each. Recoil is momentum
-conservation either way (§3.4) and it is a real shove.
+Firing drains the pool along the axis at 40 m/s. The material decides the *shape*
+of the shot: ~13 kg leaves as one concrete slug carrying 472 N·s, or as eight
+glass shards carrying 73 N·s each. Recoil is momentum conservation either way
+(§3.4) and it is a real shove — 6 to 8 m/s per trigger pull. Because panel damage
+is billed in joules, speed does far more work than mass: one shot now carries 8 to
+12 kJ against a 3.7 kJ activation threshold, so a single slug takes an intact
+partition to a passable hole.
 
 Structure is not food — a chunk still welded into a wall is refused, because
 hoovering it out of the lattice would route around the entire destruction model.
 Walls come apart under force, not under suction. Holding the funnel on a live
 panel still breaks welds; it just cannot skip the step.
 
-Measured at the shipped numbers, on a 78 kg block:
+Measured at the shipped numbers, on a 78 kg block released from 7m:
 
 | | |
 |---|---|
-| slingshot, 0.2 / 0.4 / 0.6 s hold | 5.9 / 10.3 / 14.0 m/s — 462 / 811 / 1102 N·s |
-| hold past 0.8 s | eaten instead |
-| cost at 0 / 6 / 12 m/s already inbound | 307 / 162 / 18 W |
-| capture inside the cone | ~68%; the misses are the lip and the mouth |
-| funnel held on a live panel, 4 s | 28 welds broken, 4 loose chunks eaten, 33 still welded and untouched |
-| solver, 107 loose bodies → after eating 84 | 0.27 → 0.21 ms/step, 21 → 3 contacts |
-| one shot of 25 kg | tile 3 pieces @ 130 N·s, concrete 1 @ 409, glass 13 @ 29, steel 1 @ 216 |
+| slingshot, 0.1 / 0.2 / 0.3 / 0.4 s hold | 7.8 / 14.4 / 20.6 / 25.7 m/s — 616 / 1135 / 1620 / 2020 N·s |
+| hold past 0.5 s | eaten instead |
+| a 430 kg bench, from resting on the floor | lifted and eaten in 0.30 s, peaking at 17 m/s; you get hauled to 4.1 m/s |
+| cost at 0 / 6 / 12 m/s already inbound | 377 / 199 / 21 W |
+| capture inside the cone | ~45% over the full 11m volume, mean 0.36 s; the misses are the lip and the mouth |
+| funnel held on a live panel, 4 s | 43 welds broken, 3 loose chunks eaten, 34 still welded and untouched |
+| solver, 107 loose bodies → after eating 85 | 0.33 → 0.21 ms/step, 21 → 3 contacts |
+| one shot | tile 2 pieces @ 211 N·s / 8.4 kJ, concrete 1 @ 472 / 9.4, glass 8 @ 73 / 11.7, steel 2 @ 276 / 11.0 |
+| one shot against an intact partition | activates it and opens it, every material |
 
-The slingshot curve is the whole mechanic in one row: a 0.6 s hold releases more
-momentum than a fired shot carries, and a 0.8 s hold releases nothing because you
-ate it. That is the decision the horizon was added to create.
+The slingshot curve is the whole mechanic in one row: a 0.4 s hold releases 2020
+N·s and 26 kJ — well over twice what a fired shot carries — and a 0.5 s hold
+releases nothing, because you ate it. That is the decision the horizon was added
+to create, and it is why redirecting mass stays better than originating it
+(§10.2). The window narrows as things get closer: from 5m it is 0.1 to 0.3 s.
 
 **Destruction** (`destruct.js`) — authored chunk sets welded together by a joint
 graph, so panels hole where you hit them instead of detaching all at once. See
