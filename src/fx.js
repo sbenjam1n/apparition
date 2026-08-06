@@ -20,6 +20,8 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { TK } from './telekinesis.js';
 
+const _size = new THREE.Vector2();
+
 export const POST = {
 	bloomStrength: 0.5,
 	bloomRadius: 0.82,
@@ -122,8 +124,11 @@ export class PostStack {
 		this.composer = new EffectComposer( renderer );
 		this.renderPass = new RenderPass( scene, camera );
 
-		const size = renderer.getSize( new THREE.Vector2() );
-		this.bloom = new UnrealBloomPass( size, POST.bloomStrength, POST.bloomRadius, POST.bloomThreshold );
+		// The resolution passed here is only a seed — setSize below is what every
+		// pass actually ends up sized by, and it is driven from one place.
+		this.bloom = new UnrealBloomPass(
+			renderer.getDrawingBufferSize( _size ).clone(),
+			POST.bloomStrength, POST.bloomRadius, POST.bloomThreshold );
 		this.afterimage = new AfterimagePass();
 		this.afterimage.uniforms.damp.value = POST.trailPersistence;
 		this.afterimage.enabled = false;
@@ -141,11 +146,27 @@ export class PostStack {
 
 	}
 
+	// Every pass has to agree on one size, and the only authority is the
+	// renderer's drawing buffer.
+	//
+	// Hand-computing it went wrong in two ways at any pixel ratio below 1. The
+	// composer owns its own ratio, so `composer.setSize(w, h)` allocated targets
+	// at w x h while the screen buffer was 0.85w — and `bloom.setSize(w*dpr,...)`
+	// then re-sized the bloom a second time, after composer.setSize had already
+	// propagated to it, so the bloom blurred a 1024-wide texture with kernels
+	// built for 870. That mismatch is what put banded rectangles in the frame.
+	//
+	// uResolution was the other half: at 870.4 against a 1024-wide target, the
+	// grain's normalised coordinate clamped to 1.0 across everything past 870,
+	// freezing the hash to a single value over whole bands. Taking the size from
+	// getDrawingBufferSize keeps it integral and keeps it true.
 	setSize( w, h, dpr ) {
 
+		this.composer.setPixelRatio( dpr );
 		this.composer.setSize( w, h );
-		this.bloom.setSize( w * dpr, h * dpr );
-		this.final.uniforms.uResolution.value.set( w * dpr, h * dpr );
+
+		this.renderer.getDrawingBufferSize( _size );
+		this.final.uniforms.uResolution.value.copy( _size );
 		this.final.uniforms.uPixelRatio.value = dpr;
 
 	}
@@ -161,7 +182,13 @@ export class PostStack {
 	// makes you bright, and being bright is what gets you found (§5.1).
 	update( dt, elapsed, { watts = 0, heat = 0, dilation = 0 } = {} ) {
 
-		this.frame ++;
+		// Wrapped, because the grain's temporal offset is mod(frame*61, 4096) and
+		// float32 stops representing integers exactly past 2^24. Left unbounded,
+		// frame*61 crosses that after about two hours of running and the offset
+		// quantises — the grain stops moving and starts sitting still. Wrapping at
+		// 65536 keeps every product exact; the pattern repeats every 18 minutes,
+		// which nobody will ever see.
+		this.frame = ( this.frame + 1 ) % 65536;
 
 		const load = Math.min( 1, watts / TK.wattScale );
 		this.bloom.strength = POST.bloomStrength * ( 1 + load * 0.55 + Math.min( heat / 100, 1 ) * 0.25 );
