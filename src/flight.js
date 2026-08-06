@@ -54,6 +54,20 @@ export const TUNING = {
 	mouseSensitivity: 0.35,
 	invertY: false,
 
+	// Bank into turns. Descent scales this straight off yaw *rate*
+	// (TURNROLL_SCALE = 0.154 rad of bank per rad/s), which works there because
+	// its mouse sensitivity keeps yaw rates low. At the sensitivities this build
+	// runs, the same constant tilts the horizon 60 degrees on an ordinary turn
+	// and rolls the ship completely over on a fast sweep — and because auto-level
+	// subtracts the bank, it wrecks that too.
+	//
+	// So the rate coupling is gentler and the result is capped. The cap is what
+	// actually matters: past it the bank stops tracking how hard you flicked,
+	// which is the difference between leaning into a turn and being thrown by it.
+	// Set bankScale to 0 for no bank at all; 0.154 is Descent's own number.
+	bankScale: 0.064,
+	bankMaxDeg: 10,
+
 	cameraLag: 0.045,        // seconds of positional trail at zero load
 	cameraLagPerKg: 0.00008,
 	cameraLagMax: 0.16,
@@ -65,7 +79,7 @@ export const TUNING = {
 };
 
 const FIXANG = Math.PI * 2 / 65536;
-const TURNROLL_SCALE = 0.154;
+const TURNROLL_SCALE = 0.154;   // Descent's own bank-per-yaw-rate, for reference
 const ROLL_RATE = 0x2000 * FIXANG;
 const DAMP_ANG = 0x400 * FIXANG;
 
@@ -308,7 +322,9 @@ export class Flight {
 	// you which way you are turning when there is no horizon to check against.
 	_turnroll( dt ) {
 
-		const desired = this.rotVelocity.y * TURNROLL_SCALE;
+		const cap = TUNING.bankMaxDeg * Math.PI / 180;
+		let desired = this.rotVelocity.y * TUNING.bankScale;
+		desired = desired < - cap ? - cap : ( desired > cap ? cap : desired );
 
 		if ( this.turnroll !== desired ) {
 

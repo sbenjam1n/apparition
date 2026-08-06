@@ -249,6 +249,8 @@ gFlight.add( TUNING, 'burnMultiplier', 1, 4, 0.05 ).name( 'burn x' );
 gFlight.add( TUNING, 'mouseSensitivity', 0.01, 2, 0.01 ).name( 'mouse' );
 gFlight.add( TUNING, 'rollThrustScale', 0.5, 5, 0.1 ).name( 'roll' );
 gFlight.add( TUNING, 'keyRotScale', 0.1, 4, 0.05 ).name( 'arrow-key rotation' );
+gFlight.add( TUNING, 'bankScale', 0, 0.2, 0.002 ).name( 'bank into turns' );
+gFlight.add( TUNING, 'bankMaxDeg', 0, 40, 1 ).name( 'bank limit (deg)' );
 gFlight.add( TUNING, 'wiggle', 0, 3, 0.05 ).name( 'wiggle' );
 gFlight.add( TUNING, 'autoLevel' ).name( 'auto-level' );
 gFlight.add( TUNING, 'autoLevelRate', 0, 3, 0.05 ).name( 'auto-level rate' );
