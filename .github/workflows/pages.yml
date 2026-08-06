@@ -1,14 +1,20 @@
 name: Deploy to GitHub Pages
 
-# The prototype is already a static site — index.html plus ES modules, no build
-# step — so this uploads the repository as-is. All internal paths are relative,
-# so it works unchanged from a project subpath like /apparition/.
+# OPTIONAL. The recommended way to publish this repo is branch-based Pages —
+# Settings > Pages > Source: "Deploy from a branch", branch `main`, folder
+# `/ (root)`. That uses GitHub's own Pages builder and needs no Actions run at
+# all, which matters because the site is already static: index.html plus ES
+# modules, no build step, and `.nojekyll` at the root so files are served
+# verbatim. Every internal path is relative, so it works from the /apparition/
+# project subpath unchanged.
+#
+# This workflow is the Actions-based alternative, kept for when Pages is set to
+# "GitHub Actions" as its source. It is deliberately manual-only: an
+# Actions-source deploy that cannot get a runner queues forever, and firing it on
+# every push just piles up stuck runs. Run it from the Actions tab when you want
+# it.
 
 on:
-  push:
-    branches:
-      - main
-      - claude/project-understanding-n1xp45
   workflow_dispatch:
 
 permissions:
@@ -16,7 +22,6 @@ permissions:
   pages: write
   id-token: write
 
-# Let a run finish rather than cancelling it, so a queued deploy is never lost.
 concurrency:
   group: pages
   cancel-in-progress: false

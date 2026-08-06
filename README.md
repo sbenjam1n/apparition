@@ -17,7 +17,7 @@ exactly that experiment and adds only what is needed to judge it honestly.
 ## Playing it
 
 **<https://sbenjam1n.github.io/apparition/>** once Pages is switched on — see
-[Deploying](#deploying) for the two settings that need flipping the first time.
+[Deploying](#deploying) for the one setting that needs flipping.
 
 Locally, no build step and no install:
 
@@ -247,17 +247,22 @@ unresolved and deliberately left visible rather than papered over with modifiers
 
 ## Deploying
 
-`.github/workflows/pages.yml` publishes the repository root to GitHub Pages on
-every push to `main` (and to the working branch, and on manual dispatch). It
-needs two things done once, by hand:
+The site is static — `index.html` plus ES modules, no build step, no bundler —
+and every internal path is relative, so it works from the `/apparition/` project
+subpath unchanged. `.nojekyll` sits at the root so files are served verbatim.
 
-1. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
-2. The `github-pages` environment restricts deployments to the default branch by
-   default. Either merge to `main`, or add the working branch under
-   **Settings → Environments → github-pages → Deployment branches**.
+**Use branch-based Pages.** One setting, no CI:
 
-Nothing else is required — no build, no bundler, and every internal path is
-relative, so it works from the `/apparition/` project subpath unchanged.
+> **Settings → Pages → Build and deployment → Source: Deploy from a branch →
+> `main` → `/ (root)`**
+
+That publishes through GitHub's own Pages builder. Nothing else is needed.
+
+`.github/workflows/pages.yml` is the Actions-based alternative, for if Pages is
+set to "GitHub Actions" as its source instead. It is **manual-dispatch only** on
+purpose: an Actions-source deploy that cannot get a runner sits in `queued`
+indefinitely rather than failing, and firing it on every push just accumulates
+stuck runs. Trigger it from the Actions tab if you want that route.
 
 ## Credits and licensing
 
