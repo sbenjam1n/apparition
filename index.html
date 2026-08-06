@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>APPARITION — feel test 01</title>
+	<style>
+		html, body { margin: 0; height: 100%; background: #05070a; overflow: hidden; }
+		canvas { display: block; }
+		body { font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #9fb4c4; }
+
+		#hud {
+			position: fixed; top: 12px; left: 14px; z-index: 10;
+			white-space: pre; pointer-events: none;
+			text-shadow: 0 0 8px rgba(0,0,0,.9); letter-spacing: .04em;
+		}
+		#hud b { color: #cfe8f5; font-weight: 400; }
+		#hud .warn { color: #ffb35c; }
+
+		#reticle {
+			position: fixed; left: 50%; top: 50%; z-index: 10;
+			width: 3px; height: 3px; margin: -1.5px 0 0 -1.5px;
+			border-radius: 50%; background: #cfe8f5; opacity: .55;
+			pointer-events: none; transition: opacity .12s, background .12s;
+		}
+		#reticle.probe { opacity: 1; background: #7ef4d2; box-shadow: 0 0 10px #7ef4d2; }
+		#reticle.weak  { opacity: 1; background: #ffb35c; box-shadow: 0 0 10px #ffb35c; }
+
+		#gate {
+			position: fixed; inset: 0; z-index: 20; display: flex;
+			align-items: center; justify-content: center; flex-direction: column;
+			background: radial-gradient(60% 60% at 50% 45%, #0b1720 0%, #05070a 100%);
+			cursor: pointer; gap: 22px; text-align: center;
+		}
+		#gate h1 { font-size: 13px; font-weight: 400; letter-spacing: .5em; color: #cfe8f5; margin: 0; }
+		#gate p  { margin: 0; max-width: 46ch; opacity: .65; }
+		#gate kbd {
+			display: inline-block; padding: 1px 5px; border: 1px solid #2b3d4a;
+			border-radius: 3px; color: #cfe8f5; margin: 0 1px;
+		}
+		#gate.hidden { display: none; }
+		.keys { display: grid; grid-template-columns: auto auto; gap: 3px 18px; opacity: .8; }
+		.keys i { font-style: normal; color: #cfe8f5; text-align: right; }
+	</style>
+	<script type="importmap">
+	{
+		"imports": {
+			"three": "https://cdn.jsdelivr.net/npm/three@0.179.1/build/three.module.js",
+			"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.179.1/examples/jsm/",
+			"lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20.0/+esm"
+		}
+	}
+	</script>
+</head>
+<body>
+	<div id="hud"></div>
+	<div id="reticle"></div>
+
+	<div id="gate">
+		<h1>APPARITION</h1>
+		<p>Feel test 01 — six degrees of freedom, telekinesis, and a wall that comes apart.
+		   Nothing else is running.</p>
+		<div class="keys">
+			<i>W A S D</i><span>thrust / strafe</span>
+			<i>Space / Ctrl</i><span>thrust up / down</span>
+			<i>Q E</i><span>roll</span>
+			<i>mouse</i><span>pitch / yaw</span>
+			<i>Shift</i><span>burn (more thrust, more heat)</span>
+			<i>LMB</i><span>grab &amp; hold — objects orbit you</span>
+			<i>RMB</i><span>throw the orbit (recoil applies)</span>
+			<i>F</i><span>probe — reads mass and weakness</span>
+			<i>R</i><span>release the orbit gently</span>
+			<i>Tab</i><span>tuning panel</span>
+		</div>
+		<p><kbd>click to begin</kbd></p>
+	</div>
+
+	<script type="module" src="./src/main.js"></script>
+</body>
+</html>

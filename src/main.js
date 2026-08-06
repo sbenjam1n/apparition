@@ -1,0 +1,442 @@
+// APPARITION — feel test 01.
+//
+// §29 Phase 0, the killing test: "Is flying, grabbing and throwing heavy objects
+// with Newtonian recoil delightful in an empty room — no enemies, no economy, no
+// dilation? Answer this in week two, not month eight." Everything in the design
+// index is superstructure over that, so this build runs exactly that experiment
+// and nothing beyond what is needed to judge it honestly.
+//
+// What is deliberately absent: enemies, objectives, annexation, containment,
+// humans, and any economy that would let a bad flight model hide behind a good
+// system. The watt and heat meters are present because destruction and
+// telekinesis need *some* cost to feel weighted, and because a feel test that
+// cannot show you the cost curve cannot be tuned.
+
+import * as THREE from 'three';
+import { GUI } from 'lil-gui';
+
+import { AVBDSolver } from './avbd.js';
+import { LightRig } from './lighting.js';
+import { buildRoom, scatterProps, ROOM, MATERIAL_KIND } from './room.js';
+import { DebrisField } from './debris.js';
+import { Flight, TUNING } from './flight.js';
+import { Input } from './input.js';
+import { Telekinesis, TK } from './telekinesis.js';
+import { Destruction, addTestPanels, PANEL_STATE } from './destruct.js';
+import { PostStack, POST } from './fx.js';
+import { ImpactAudio } from './audio.js';
+import { Hud } from './hud.js';
+
+// --- renderer ---------------------------------------------------------------
+
+const renderer = new THREE.WebGLRenderer( { antialias: false, powerPreference: 'high-performance' } );
+renderer.setSize( innerWidth, innerHeight );
+document.body.appendChild( renderer.domElement );
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color( 0x04070a );
+
+const camera = new THREE.PerspectiveCamera( 78, innerWidth / innerHeight, 0.05, 140 );
+
+// --- world ------------------------------------------------------------------
+
+const solver = new AVBDSolver( 640 );
+solver.gravity = - 9.81;
+solver.iterations = 6;
+
+const rig = new LightRig();
+const room = buildRoom( scene, rig, solver );
+const debris = new DebrisField( scene, rig, solver );
+
+const flight = new Flight( solver );
+const telekinesis = new Telekinesis( solver, flight, debris );
+const destruction = new Destruction( scene, rig, solver, debris );
+const panels = addTestPanels( destruction, rig, ROOM );
+
+scatterProps( solver, ( i, kind ) => debris.register( i, kind ) );
+
+const post = new PostStack( renderer, scene, camera );
+const audio = new ImpactAudio();
+const hud = new Hud( document.getElementById( 'hud' ), document.getElementById( 'reticle' ) );
+const input = new Input( renderer.domElement, document.getElementById( 'gate' ) );
+
+document.getElementById( 'gate' ).addEventListener( 'click', () => audio.resume(), { once: true } );
+
+// --- reactions --------------------------------------------------------------
+
+const _camDir = new THREE.Vector3();
+
+solver.onImpact = ( i, speed, x, y, z, material ) => {
+
+	// Pan by which side of the view the hit landed on. Cheap, and with no visible
+	// protagonist it is most of the spatial information the player gets.
+	_camDir.set( 1, 0, 0 ).applyQuaternion( flight.viewQuaternion );
+	const pan = Math.max( - 1, Math.min( 1,
+		( ( x - flight.viewPosition.x ) * _camDir.x +
+		  ( y - flight.viewPosition.y ) * _camDir.y +
+		  ( z - flight.viewPosition.z ) * _camDir.z ) * 0.2 ) );
+
+	audio.impact( speed, material, pan );
+
+	// A heavy hit near a fixture makes it stutter. §22.4: your own noise is your
+	// liability, and here it is visible as well as audible.
+	if ( speed > 5 ) {
+
+		for ( const s of rig.strips ) {
+
+			if ( s.dead ) continue;
+			const d = Math.hypot( s.a.x - x, s.a.y - y, s.a.z - z );
+			if ( d < 6 ) rig.pulse( s, Math.min( 0.5, speed * 0.05 ) );
+
+		}
+
+	}
+
+};
+
+destruction.onStateChange = panel => {
+
+	if ( panel.state === PANEL_STATE.BLOWN ) {
+
+		audio.release( 8 );
+		for ( const s of rig.strips ) rig.pulse( s, 0.35, 3 );
+		// The one sanctioned use of the chroma channel (§44.9). A wall coming
+		// apart is not an erasure, so this is a single frame at low amplitude —
+		// present here only so the reserved register is wired and testable.
+		post.erase( 0.35 );
+
+	} else {
+
+		audio.impact( 6, MATERIAL_KIND.CONCRETE, 0 );
+
+	}
+
+};
+
+telekinesis.onThrow = ( count, speed ) => audio.release( count + Math.min( 6, speed ) );
+telekinesis.onGrab = () => audio.impact( 1.6, MATERIAL_KIND.STEEL, 0 );
+
+// --- quality governor -------------------------------------------------------
+//
+// A 2019 MacBook is anything from an Iris Plus 645 to a Radeon Pro 5500M, a
+// range of roughly 6x. Rather than target the floor and look cheap on the
+// ceiling, start optimistic and step down on sustained frame time. Steps are
+// ordered cheapest-look-cost first: volumetric taps, then resolution, then
+// solver iterations, then bloom.
+
+const TIERS = [
+	{ dpr: 1.00, volumetric: 3, iterations: 6, bloom: true, maxBodies: 640 },
+	{ dpr: 1.00, volumetric: 2, iterations: 5, bloom: true, maxBodies: 512 },
+	{ dpr: 0.85, volumetric: 1, iterations: 4, bloom: true, maxBodies: 384 },
+	{ dpr: 0.72, volumetric: 0, iterations: 4, bloom: true, maxBodies: 288 },
+	{ dpr: 0.62, volumetric: 0, iterations: 3, bloom: false, maxBodies: 192 }
+];
+
+const quality = {
+	tier: 0,
+	auto: true,
+	dpr: 1,
+	_window: [],
+	_cooldown: 2.0
+};
+
+// Integrated Intel parts on this generation cannot carry the volumetric taps at
+// full resolution; start them one tier down rather than making them earn it.
+( function detect() {
+
+	const gl = renderer.getContext();
+	const ext = gl.getExtension( 'WEBGL_debug_renderer_info' );
+	const name = ext ? String( gl.getParameter( ext.UNMASKED_RENDERER_WEBGL ) ) : '';
+
+	if ( /Intel/i.test( name ) && ! /Arc/i.test( name ) ) quality.tier = 2;
+
+	quality.gpu = name || 'unknown';
+
+} )();
+
+function applyTier() {
+
+	const t = TIERS[ quality.tier ];
+	quality.dpr = Math.min( t.dpr, devicePixelRatio );
+
+	renderer.setPixelRatio( quality.dpr );
+	rig.uniforms.uVolumetricSteps.value = t.volumetric;
+	solver.iterations = t.iterations;
+	post.bloom.enabled = t.bloom;
+	post.setSize( innerWidth, innerHeight, quality.dpr );
+
+}
+
+function governor( dt ) {
+
+	if ( ! quality.auto ) return;
+
+	quality._cooldown -= dt;
+	quality._window.push( dt );
+	if ( quality._window.length > 90 ) quality._window.shift();
+	if ( quality._window.length < 90 || quality._cooldown > 0 ) return;
+
+	const sorted = quality._window.slice().sort( ( a, b ) => a - b );
+	// 90th percentile, not the mean — a stutter every ten frames is what makes
+	// 6DOF feel bad, and an average hides it completely.
+	const p90 = sorted[ Math.floor( sorted.length * 0.9 ) ];
+
+	if ( p90 > 0.0215 && quality.tier < TIERS.length - 1 ) {
+
+		quality.tier ++;
+		applyTier();
+		quality._cooldown = 3.0;
+		quality._window.length = 0;
+
+	} else if ( p90 < 0.0125 && quality.tier > 0 ) {
+
+		quality.tier --;
+		applyTier();
+		quality._cooldown = 6.0;
+		quality._window.length = 0;
+
+	}
+
+}
+
+// --- tuning panel -----------------------------------------------------------
+//
+// Feel cannot be tuned without live sliders. This is the actual instrument of
+// the experiment; the rest of the build is the apparatus around it.
+
+const gui = new GUI( { title: 'APPARITION — feel test 01', width: 292 } );
+gui.domElement.style.zIndex = 30;
+
+const gFlight = gui.addFolder( 'Flight' );
+gFlight.add( TUNING, 'thrustScale', 0.02, 0.6, 0.005 ).name( 'thrust' );
+gFlight.add( TUNING, 'drag', 0.005, 0.12, 0.001 ).name( 'drag' );
+gFlight.add( TUNING, 'recoilMass', 10, 300, 5 ).name( 'recoil mass (kg)' );
+gFlight.add( TUNING, 'burnMultiplier', 1, 4, 0.05 ).name( 'burn x' );
+gFlight.add( TUNING, 'mouseSensitivity', 0.15, 3, 0.05 ).name( 'mouse' );
+gFlight.add( TUNING, 'rollThrustScale', 0.5, 5, 0.1 ).name( 'roll' );
+gFlight.add( TUNING, 'wiggle', 0, 3, 0.05 ).name( 'wiggle' );
+gFlight.add( TUNING, 'autoLevel' ).name( 'auto-level' );
+gFlight.add( TUNING, 'autoLevelRate', 0, 3, 0.05 ).name( 'auto-level rate' );
+gFlight.add( TUNING, 'invertY' ).name( 'invert Y' );
+
+const gCam = gui.addFolder( 'Camera (embodiment)' );
+gCam.add( TUNING, 'cameraLag', 0, 0.2, 0.002 ).name( 'position lag' );
+gCam.add( TUNING, 'cameraLagPerKg', 0, 0.01, 0.0002 ).name( 'lag per kg' );
+gCam.add( TUNING, 'rotationLag', 0, 0.2, 0.002 ).name( 'rotation lag' );
+gCam.add( TUNING, 'swayAmount', 0, 3, 0.05 ).name( 'sway' );
+gCam.add( camera, 'fov', 55, 110, 1 ).name( 'fov' ).onChange( () => camera.updateProjectionMatrix() );
+
+const gTk = gui.addFolder( 'Telekinesis' );
+gTk.add( TK, 'reachRadius', 2, 20, 0.5 ).name( 'reach' );
+gTk.add( TK, 'orbitBase', 0.5, 4, 0.05 ).name( 'orbit radius' );
+gTk.add( TK, 'orbitPerItem', 0, 0.6, 0.01 ).name( 'orbit / item' );
+gTk.add( TK, 'maxHeld', 1, 24, 1 ).name( 'max held' );
+gTk.add( TK, 'servoStiffness', 3, 40, 0.5 ).name( 'grip' );
+gTk.add( TK, 'throwSpeed', 2, 40, 0.5 ).name( 'throw speed' );
+gTk.add( TK, 'throwBudget', 100, 4000, 25 ).name( 'throw budget (N·s)' );
+gTk.add( TK, 'holdWattsPerKg', 0, 1, 0.01 ).name( 'W per kg held' );
+gTk.add( TK, 'accelWattsPerKg', 0, 0.6, 0.005 ).name( 'W per kg·a' );
+
+const gPhys = gui.addFolder( 'Solver (AVBD)' );
+gPhys.add( solver, 'iterations', 1, 12, 1 ).name( 'iterations' );
+gPhys.add( solver, 'beta', 1e3, 3e5, 1e3 ).name( 'beta (penalty ramp)' );
+gPhys.add( solver, 'alpha', 0.5, 1, 0.01 ).name( 'alpha (stabilise)' );
+gPhys.add( solver, 'gamma', 0.5, 1, 0.01 ).name( 'gamma (warmstart decay)' );
+gPhys.add( solver, 'postStabilize' ).name( 'post-stabilise' );
+gPhys.add( solver, 'sleepTime', 0.05, 3, 0.05 ).name( 'sleep after (s)' );
+gPhys.add( solver, 'gravity', - 30, 0, 0.1 ).name( 'gravity' );
+
+const gLook = gui.addFolder( 'Light & post' );
+gLook.add( rig.uniforms.uFogDensity, 'value', 0, 0.16, 0.002 ).name( 'fog density' );
+gLook.add( rig.uniforms.uFogHeightFalloff, 'value', 0, 0.5, 0.005 ).name( 'fog height' );
+gLook.add( rig.uniforms.uVolumetricGain, 'value', 0, 2, 0.02 ).name( 'volumetric' );
+gLook.add( rig.uniforms.uCausticStrength, 'value', 0, 4, 0.05 ).name( 'caustics' );
+gLook.add( rig.uniforms.uCausticScale, 'value', 0.1, 2, 0.02 ).name( 'caustic scale' );
+gLook.addColor( { c: '#0a141b' }, 'c' ).name( 'fog colour' )
+	.onChange( v => rig.uniforms.uFogColor.value.set( v ) );
+gLook.addColor( { c: '#0a1218' }, 'c' ).name( 'ambient' )
+	.onChange( v => rig.uniforms.uAmbient.value.set( v ) );
+gLook.add( POST, 'bloomStrength', 0, 2, 0.01 ).name( 'bloom' );
+gLook.add( POST, 'bloomThreshold', 0, 1.5, 0.01 ).name( 'bloom threshold' )
+	.onChange( v => post.bloom.threshold = v );
+gLook.add( POST, 'bloomRadius', 0, 1.5, 0.01 ).name( 'bloom radius' )
+	.onChange( v => post.bloom.radius = v );
+gLook.add( POST, 'grain', 0, 0.2, 0.002 ).name( 'grain' );
+gLook.add( POST, 'vignette', 0, 1.5, 0.01 ).name( 'vignette' );
+gLook.add( POST, 'scanline', 0, 0.12, 0.002 ).name( 'scanline' );
+gLook.add( POST, 'exposure', 0.2, 3, 0.02 ).name( 'exposure' );
+
+const gPerf = gui.addFolder( 'Performance' );
+gPerf.add( quality, 'auto' ).name( 'auto governor' );
+gPerf.add( quality, 'tier', 0, TIERS.length - 1, 1 ).name( 'tier' ).listen().onChange( applyTier );
+gPerf.add( audio, 'enabled' ).name( 'audio' );
+gPerf.add( { gpu: quality.gpu }, 'gpu' ).name( 'gpu' ).disable();
+
+const actions = {
+	respawnPanels() {
+
+		// Persistence is real (§7.5) — this is a dev reset, not a game mechanic.
+		for ( const p of panels ) {
+
+			p.state = PANEL_STATE.INTACT;
+			p.damage = 0;
+			p.chunksSpawned = false;
+			p.mesh.visible = true;
+			p.mesh.position.copy( p.center );
+			p.mesh.rotation.z = 0;
+			p.material.uniforms.uGrout.value.setHex( 0x1a1004 );
+
+		}
+
+	},
+	clearDebris() {
+
+		telekinesis.releaseAll();
+		for ( let i = 0; i < solver.count; i ++ ) if ( solver.state[ i ] !== 0 ) solver.release( i );
+		scatterProps( solver, ( i, kind ) => debris.register( i, kind ) );
+
+	},
+	resetFlight() { flight.reset(); },
+	relight() { for ( const s of [ ...rig.strips, ...rig.practicals ] ) { s.dead = false; s.charge = 0; s.intensity = s.rated; } }
+};
+
+gui.add( actions, 'resetFlight' ).name( 'reset position (G)' );
+gui.add( actions, 'respawnPanels' ).name( 'restore panels' );
+gui.add( actions, 'clearDebris' ).name( 'clear debris' );
+gui.add( actions, 'relight' ).name( 'restore lighting' );
+
+gui.close();
+let guiOpen = false;
+
+addEventListener( 'keydown', e => {
+
+	if ( e.code === 'Tab' ) {
+
+		e.preventDefault();
+		guiOpen = ! guiOpen;
+		guiOpen ? gui.open() : gui.close();
+
+	}
+
+} );
+
+// --- loop -------------------------------------------------------------------
+
+let last = performance.now();
+let elapsed = 0;
+let accumulator = 0;
+let dilation = 0;
+
+const FIXED = 1 / 60;
+
+// Dilation on the wheel — a continuous dial rather than a state (§45.7), and the
+// cheapest possible test of §10.8's claim that large object counts are
+// affordable *because* the fight is slow. Watch the contact count and frame time
+// as you wind it in.
+addEventListener( 'wheel', e => {
+
+	if ( ! input.locked ) return;
+	dilation = Math.max( 0, Math.min( 0.96, dilation - e.deltaY * 0.0006 ) );
+	e.preventDefault();
+
+}, { passive: false } );
+
+applyTier();
+post.setSize( innerWidth, innerHeight, quality.dpr );
+
+function frame() {
+
+	requestAnimationFrame( frame );
+
+	const now = performance.now();
+	let dt = ( now - last ) / 1000;
+	last = now;
+
+	// A backgrounded tab returns with a huge dt; clamping is the difference
+	// between resuming and exploding.
+	if ( dt > 0.1 ) dt = 0.1;
+	elapsed += dt;
+
+	governor( dt );
+
+	const state = input.sample();
+	state.probe = input.pressed( 'probe' );
+	state.releaseOrbit = input.pressed( 'releaseOrbit' );
+	if ( input.pressed( 'reset' ) ) flight.reset();
+
+	if ( input.locked ) {
+
+		flight.update( state, dt );
+
+	} else {
+
+		state.mouseX = 0;
+		state.mouseY = 0;
+
+	}
+
+	// Physics runs on a fixed step regardless of frame rate. AVBD is
+	// unconditionally stable so a variable step would not blow up, but contact
+	// warm-starting and the friction anchors both assume a consistent dt.
+	const scaled = dt * ( 1 - dilation );
+	accumulator += scaled;
+	let steps = 0;
+
+	while ( accumulator >= FIXED && steps < 3 ) {
+
+		solver.step( FIXED );
+		accumulator -= FIXED;
+		steps ++;
+
+	}
+
+	if ( accumulator > FIXED * 3 ) accumulator = 0;
+
+	telekinesis.update( state, Math.max( dt, 1e-4 ), destruction );
+	destruction.update( dt, flight );
+	debris.update( dt );
+
+	rig.uniforms.uTime.value = elapsed;
+	rig.update( dt, flight.viewPosition );
+
+	audio.setLoad( Math.min( 1, telekinesis.watts / TK.wattScale ) );
+	flight.lastImpact *= 0.6;
+
+	camera.position.copy( flight.viewPosition );
+	camera.quaternion.copy( flight.viewQuaternion );
+
+	post.update( dt, elapsed, { watts: telekinesis.watts, heat: telekinesis.heat, dilation } );
+	post.render( dt );
+
+	hud.update( dt, {
+		tier: quality.tier,
+		dpr: quality.dpr,
+		active: solver.stats.active,
+		asleep: solver.stats.asleep,
+		contacts: solver.stats.contacts,
+		watts: telekinesis.watts,
+		heat: telekinesis.heat,
+		wattScale: TK.wattScale,
+		held: telekinesis.held.length,
+		load: telekinesis.load,
+		speed: flight.velocity.length(),
+		light: rig.remaining(),
+		dilation,
+		probe: telekinesis.probeInfo
+	} );
+
+}
+
+addEventListener( 'resize', () => {
+
+	camera.aspect = innerWidth / innerHeight;
+	camera.updateProjectionMatrix();
+	renderer.setSize( innerWidth, innerHeight );
+	post.setSize( innerWidth, innerHeight, quality.dpr );
+
+} );
+
+frame();
+
+// Exposed for console poking during tuning.
+window.APPARITION = { solver, rig, flight, telekinesis, destruction, debris, quality, post, TUNING, TK, POST };
