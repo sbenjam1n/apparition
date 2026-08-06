@@ -76,23 +76,50 @@ export const ACC = {
 	// tuned. The shape of §8.3 is unchanged; only the constant moved.
 	intakeWattsPerKg: 0.035, // §8.3, the expensive half
 
-	// --- firing -------------------------------------------------------------
-	// 16 m/s was a lob. It crossed the room in a second and a quarter, and a body
-	// you had merely pulled in and released left faster than one you fired — which
-	// is exactly backwards. 40 m/s is a projectile, and because panel damage is
-	// billed in joules rather than newton-seconds, the speed does far more work
-	// than the mass: one concrete slug now carries ~9.4kJ against a panel
-	// activation threshold of 3.7kJ, where the old shot fell short of it.
-	fireSpeed: 40.0,
-	// The impulse budget is a ceiling for the pathological case, not the operating
-	// point. It used to bind on every shot, which flattened all four materials to
-	// the same recoil; per-shot mass is the thing that should set the kick.
-	fireBudget: 1400,        // N·s
-	fireMass: 15,            // kg drawn per shot
-	maxBurst: 24,
-	fireSpin: 1.4,
-	fireSpread: 0.07,
+	// --- channelling --------------------------------------------------------
+	// Firing used to spawn one to eight rigid boxes, which is a brick-throwing
+	// simulator no matter how fast the bricks go. It is now a continuous stream of
+	// shards (shred.js), held rather than clicked, because the thing being asked
+	// for is a jet and a jet is a rate, not an event.
+	//
+	// The split follows the wind-engineering classification: compact debris flies
+	// ballistically and needs a rigid body, plate debris goes where the air goes
+	// and does not. Everything the funnel channels is plate debris.
+	fireSpeed: 62.0,         // m/s at the muzzle; light pieces need speed to carry
+	// 46 kg/s emptied a full disc in twenty seconds and, worse, produced 2850N
+	// of continuous thrust — one second on the trigger put the player at 40 m/s,
+	// which is a rocket rather than a weapon. A mass flow really does push back
+	// that hard; the fix is to channel less of it, not to pretend otherwise.
+	channelRate: 16.0,       // kg/s drawn from the pool while held
+	channelSpread: 0.20,     // half-angle of the jet cone, radians
+	// The stream corkscrews rather than flying straight, and this is not only a
+	// look. A velocity-aligned streak fired directly along the view axis is seen
+	// end-on and projects to a dot: the jet measured at eleven hundred shards a
+	// second and rendered as an almost empty room. Tangential motion gives every
+	// shard a cross-axis component, so it reads as a streak from behind it as well
+	// as from the side — and a rotating jet is what an accretion disc throws
+	// anyway, so the fix and the reference are the same thing.
+	jetSwirl: 0.13,          // tangential speed as a fraction of muzzle speed
+	jetTwist: 34.0,          // rad/s the emitter turns; this is the visible helix
+	streamDensity: 1.0,      // global multiplier on shard count; grain sets the rest
+	jetSpin: 1.4,
 	rechewDelay: 0.35,       // s of immunity so fired matter is not re-eaten
+
+	// --- the disc -----------------------------------------------------------
+	// What you are carrying, made visible as the thing the reference image was:
+	// matter in orbit, not a number on a readout. Bound shards are non-physical
+	// and cost one draw call shared with everything else in shred.js.
+	// Pushed out in front of the apex rather than centred on it. Orbiting *at* the
+	// viewpoint puts the whole ring at ninety degrees off-axis, which is outside
+	// any sane field of view — the disc was running correctly and drawing nothing.
+	// Ahead by this much, a ring of this radius lands just inside the frame edge,
+	// which is where it was asked to be: fullness at the periphery, like mud on
+	// the lens.
+	discOffset: 2.3,
+	discRadius: 1.5,         // at full capacity
+	discThickness: 0.55,
+	discSpin: 5.2,           // rad/s
+	discShards: 620,         // population at full capacity
 
 	// --- readout ------------------------------------------------------------
 	ventRate: 3.4,
@@ -101,21 +128,21 @@ export const ACC = {
 
 };
 
-// Half-extent and specific gravity of one fired piece, per material. Same mass
-// of pool becomes a spray of glass or a few concrete lumps: different body
-// count, different momentum per hit, different damage. This is the only place
-// the four materials mean anything mechanically, and it is why the pool is per
-// material rather than one number.
+// What each material becomes when it is torn up. The four numbers are the only
+// place the materials mean anything mechanically, and they are now about *grain*
+// rather than about lumps: `shard` is the mass of one piece of the stream, and
+// `size` is how big it draws.
 //
-// Sizes came down when the muzzle velocity went up. The grain is what quantises
-// a shot — a 25kg concrete lump meant fireMass could not be set below 25kg for
-// concrete at all, so raising the speed raised the recoil with nothing to trade
-// against it. Smaller pieces make the per-shot mass a real dial again.
+// This is the Tachikawa split, which is the parameter wind engineering uses to
+// rate whether debris flies at all — aerodynamic force over weight, so area per
+// unit mass. Glass tears into a lot of very light needles with an enormous ratio
+// and it hangs in the air; steel tears into few dense grains that punch through
+// and drop. Same kilogram of pool, completely different weapon.
 const GRAIN = [
-	{ half: 0.065, density: 2.4 },   // tile      5.3 kg
-	{ half: 0.085, density: 2.4 },   // concrete 11.8 kg
-	{ half: 0.045, density: 2.5 },   // glass     1.8 kg
-	{ half: 0.048, density: 7.8 }    // steel     6.9 kg
+	{ shard: 0.055, size: 1.00, drag: 1.00 },   // tile     — grit
+	{ shard: 0.110, size: 1.35, drag: 0.80 },   // concrete — coarse rubble
+	{ shard: 0.014, size: 0.72, drag: 1.75 },   // glass    — needles, and a lot of them
+	{ shard: 0.190, size: 0.62, drag: 0.55 }    // steel    — dense, small, and it carries
 ];
 
 export const MATERIAL_NAME = [ 'tile', 'concrete', 'glass', 'steel' ];
@@ -128,13 +155,24 @@ const _spawn = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
 
+// The orbit descriptor handed to shred.js each frame. A plain object rather than
+// a class: it is written once per frame and read by a few thousand shards.
+const _disc = {
+	x: 0, y: 0, z: 0,
+	dx: 0, dy: 0, dz: - 1,
+	rx: 1, ry: 0, rz: 0,
+	ux: 0, uy: 1, uz: 0,
+	radius: 1, thickness: 0.5, spin: 5
+};
+
 export class Accretion {
 
-	constructor( solver, flight, debris ) {
+	constructor( solver, flight, debris, shred ) {
 
 		this.solver = solver;
 		this.flight = flight;
 		this.debris = debris;
+		this.shred = shred;
 
 		// Per-material mass, in kilograms. The whole inventory.
 		this.pool = new Float32Array( KINDS );
@@ -150,7 +188,11 @@ export class Accretion {
 		this.consumed = 0;          // lifetime count, for the readout
 		this.stalled = false;       // horizon refused something for want of room
 		this.lastFireSpeed = 0;
-		this.reactionN = 0;       // newtons the funnel is pulling back with
+		this.reactionN = 0;         // newtons the funnel is pulling back with
+		this.channelling = false;
+		this.jetRate = 0;           // shards/s currently leaving
+		this._shardDebt = 0;        // fractional shards carried between frames
+		this._boundWant = 0;
 
 		this.probeTarget = - 1;
 		this.probeInfo = null;
@@ -179,10 +221,19 @@ export class Accretion {
 
 	}
 
-	pieceMass( kind ) {
+	shardMass( kind ) {
 
-		const g = GRAIN[ kind ];
-		return 8 * g.half * g.half * g.half * g.density * 1000;
+		return GRAIN[ kind ].shard;
+
+	}
+
+	// The heaviest thing in the pool, which is what the stream fires unless you
+	// have chosen otherwise. Keeps the selector from being mandatory.
+	heaviest() {
+
+		let best = this.selected, bestKg = this.pool[ this.selected ];
+		for ( let k = 0; k < KINDS; k ++ ) if ( this.pool[ k ] > bestKg ) { bestKg = this.pool[ k ]; best = k; }
+		return best;
 
 	}
 
@@ -457,8 +508,11 @@ export class Accretion {
 
 		// --- fire / vent --------------------------------------------------------
 
-		if ( input.fire ) this.fire();
+		this.channelling = !! input.fire && this.mass > 0;
+		if ( this.channelling ) this.channel( dt ); else this.jetRate = 0;
 		if ( input.vent ) this.vent();
+
+		this._syncDisc( dt );
 
 		// --- running costs ------------------------------------------------------
 
@@ -493,6 +547,14 @@ export class Accretion {
 		this.mass += m;
 		this.consumed ++;
 
+		// It comes apart. Deleting the body and adding a number to a pool is what
+		// made this read as swallowing rather than shredding — the burst is the
+		// same body, in pieces, still carrying the velocity it arrived with, and
+		// those pieces then spiral in like everything else in the funnel.
+		this.shred.burst( s.px[ i ], s.py[ i ], s.pz[ i ],
+			s.vx[ i ] * 0.45, s.vy[ i ] * 0.45, s.vz[ i ] * 0.45,
+			m, kind, Math.max( 0.12, s.radius[ i ] * 0.7 ) );
+
 		if ( this.onConsume ) this.onConsume( kind, m, s.px[ i ], s.py[ i ], s.pz[ i ] );
 
 		s.consume( i );
@@ -500,84 +562,130 @@ export class Accretion {
 
 	}
 
-	fire() {
+	// The channel. Held rather than clicked, and a rate rather than an event: the
+	// pool drains at channelRate while the trigger is down and comes out as a
+	// stream of shards along the axis.
+	//
+	// Nothing spawned here is a rigid body. That is the point — a jet made of
+	// solver bodies would be a few dozen boxes and would cost the contact graph
+	// for every one, where this is a few hundred shards a second against a plane
+	// test each. It is also the correct physics: this is plate debris, and plate
+	// debris goes where the flow goes rather than following its own ballistic arc.
+	channel( dt ) {
 
-		const s = this.solver;
-		const kind = this.selected;
+		const kind = this.pool[ this.selected ] > 0 ? this.selected : this.heaviest();
 		const available = this.pool[ kind ];
-		if ( available <= 0 ) return 0;
+		if ( available <= 0 || dt <= 0 ) { this.jetRate = 0; return 0; }
 
-		const pm = this.pieceMass( kind );
-		const want = Math.min( ACC.fireMass, available );
+		const g = GRAIN[ kind ];
+		const drawn = Math.min( available, ACC.channelRate * dt );
 
-		// Always at least one piece, so a residue smaller than a single grain can
-		// still be spent instead of sitting in the pool forever.
-		const n = Math.max( 1, Math.min( ACC.maxBurst, Math.floor( want / pm ) ) );
+		// Piece count comes from the *grain*, not from a global rate, and that is
+		// the whole material difference. The same 16 kg/s leaves as eleven hundred
+		// glass needles a second or as eighty-four steel grains — identical mass
+		// flow, identical recoil, and completely different weapons, because what
+		// changes is the energy per hit rather than the energy. Sandblasting
+		// versus punching.
+		this._shardDebt += drawn / g.shard * ACC.streamDensity;
+		const n = Math.floor( this._shardDebt );
+		this._shardDebt -= n;
 
 		_dir.copy( this.axis );
 		_right.set( 1, 0, 0 ).applyQuaternion( this.flight.viewQuaternion );
 		_up.set( 0, 1, 0 ).applyQuaternion( this.flight.viewQuaternion );
 
-		const origin = this.flight.viewPosition;
-		const g = GRAIN[ kind ];
-		const share = ACC.fireBudget / n;
+		const o = this.flight.viewPosition;
 
-		let ix = 0, iy = 0, iz = 0, spawned = 0;
+		if ( n > 0 ) {
 
-		for ( let p = 0; p < n; p ++ ) {
+			this.shred.jet(
+				o.x, o.y, o.z,
+				_dir.x, _dir.y, _dir.z,
+				_right.x, _right.y, _right.z,
+				_up.x, _up.y, _up.z,
+				n, kind, ACC.fireSpeed, ACC.channelSpread,
+				drawn / n, g.size, g.drag, ACC.jetSwirl, this._clock * ACC.jetTwist );
 
-			// Outside the horizon by construction: the axial offset alone clears
-			// it, and the jitter is perpendicular, so it can only add distance.
-			const a = ( p / n ) * Math.PI * 2 + this._clock * 3.1;
-			const jr = 0.18 + ( p % 3 ) * 0.09;
-
-			_spawn.copy( origin )
-				.addScaledVector( _dir, ACC.horizon + 0.42 )
-				.addScaledVector( _right, Math.cos( a ) * jr )
-				.addScaledVector( _up, Math.sin( a ) * jr );
-
-			const b = s.spawn( _spawn.x, _spawn.y, _spawn.z, g.half, g.half, g.half, g.density, kind );
-			if ( b < 0 ) break;
-
-			this._spawnedAt[ b ] = this._clock;
-			this.debris.register( b, kind );
-			this.debris.setHeat( b, 1 );
-
-			const sx = _dir.x + ( Math.random() - 0.5 ) * ACC.fireSpread;
-			const sy = _dir.y + ( Math.random() - 0.5 ) * ACC.fireSpread;
-			const sz = _dir.z + ( Math.random() - 0.5 ) * ACC.fireSpread;
-			const sl = Math.sqrt( sx * sx + sy * sy + sz * sz ) || 1;
-
-			const m = s.mass[ b ];
-			const j = Math.min( m * ACC.fireSpeed, share );
-
-			s.applyImpulse( b, sx / sl * j, sy / sl * j, sz / sl * j );
-			s.wx[ b ] += ( Math.random() - 0.5 ) * ACC.fireSpin * 6;
-			s.wy[ b ] += ( Math.random() - 0.5 ) * ACC.fireSpin * 6;
-			s.wz[ b ] += ( Math.random() - 0.5 ) * ACC.fireSpin * 6;
-
-			ix += sx / sl * j; iy += sy / sl * j; iz += sz / sl * j;
-
-			// Launching from rest is the expensive case, and the economy hangs off
-			// exactly that.
-			this.watts += j * ACC.intakeWattsPerKg * 20;
-			spawned ++;
+			// What leaves the disc has to visibly leave the disc, or the orbit is
+			// a decal that never spends.
+			this.shred.releaseBound( Math.min( n, 8 ), _dir.x, _dir.y, _dir.z, ACC.fireSpeed * 0.8 );
 
 		}
 
-		if ( spawned === 0 ) return 0;
-
-		const drawn = Math.min( available, spawned * pm );
 		this.pool[ kind ] = Math.max( 0, this.pool[ kind ] - drawn );
 		this.mass = Math.max( 0, this.mass - drawn );
 
-		this.lastFireSpeed = Math.sqrt( ix * ix + iy * iy + iz * iz ) / FLIGHT.recoilMass;
+		// Recoil is now a continuous thrust rather than a kick, which is what a
+		// mass flow actually produces (§3.4). Holding the trigger is a burn.
+		const thrust = drawn * ACC.fireSpeed;
+		this.flight.applyImpulse( - _dir.x * thrust, - _dir.y * thrust, - _dir.z * thrust );
+		this.lastFireSpeed = thrust / ( FLIGHT.recoilMass * Math.max( dt, 1e-4 ) );
 
-		// Recoil. Heaving a piano launches you backward (§3.4).
-		this.flight.applyImpulse( - ix, - iy, - iz );
+		this.watts += drawn / Math.max( dt, 1e-4 ) * ACC.fireSpeed * ACC.intakeWattsPerKg * 1.6;
+		this.jetRate = n / Math.max( dt, 1e-4 );
 
-		if ( this.onFire ) this.onFire( kind, spawned, this.lastFireSpeed );
-		return spawned;
+		if ( this.onFire ) this.onFire( kind, n, drawn );
+		return n;
+
+	}
+
+	// Keep the visible disc population in step with what is actually carried, a
+	// few shards a frame rather than all at once — the disc should fill as you
+	// eat and thin as you spend, not pop between states.
+	_syncDisc( dt ) {
+
+		const sat = Math.min( 1, this.saturation );
+		const want = Math.round( sat * ACC.discShards );
+		const have = this.shred.boundCount();
+
+		if ( want > have ) {
+
+			const kind = this.heaviest();
+			this.shred.bind( Math.min( 14, want - have ), kind, GRAIN[ kind ].size );
+
+		} else if ( have > want + 8 ) {
+
+			// Excess falls out rather than being deleted, so a disc that has just
+			// been spent sheds visibly.
+			this.shred.releaseBound( Math.min( 10, have - want ), _dir.x, _dir.y, _dir.z, 3.5 );
+
+		}
+
+		_disc.dx = this.axis.x; _disc.dy = this.axis.y; _disc.dz = this.axis.z;
+		_disc.x = this.flight.viewPosition.x + _disc.dx * ACC.discOffset;
+		_disc.y = this.flight.viewPosition.y + _disc.dy * ACC.discOffset;
+		_disc.z = this.flight.viewPosition.z + _disc.dz * ACC.discOffset;
+
+		// A stable basis perpendicular to the axis. Branch-free pick of the least
+		// aligned world axis, so the disc does not spin up when you look straight
+		// down (Duff et al., same trick the solver uses for contact tangents).
+		const ax = Math.abs( _disc.dx ), ay = Math.abs( _disc.dy );
+		const sx = ax < ay && ax < Math.abs( _disc.dz ) ? 1 : 0;
+		const sy = sx === 0 && ay <= Math.abs( _disc.dz ) ? 1 : 0;
+		const sz = sx === 0 && sy === 0 ? 1 : 0;
+
+		let rx = _disc.dy * sz - _disc.dz * sy;
+		let ry = _disc.dz * sx - _disc.dx * sz;
+		let rz = _disc.dx * sy - _disc.dy * sx;
+		const rl = Math.sqrt( rx * rx + ry * ry + rz * rz ) || 1;
+		rx /= rl; ry /= rl; rz /= rl;
+
+		_disc.rx = rx; _disc.ry = ry; _disc.rz = rz;
+		_disc.ux = _disc.dy * rz - _disc.dz * ry;
+		_disc.uy = _disc.dz * rx - _disc.dx * rz;
+		_disc.uz = _disc.dx * ry - _disc.dy * rx;
+
+		_disc.radius = ACC.discRadius * ( 0.45 + sat * 0.55 );
+		_disc.thickness = ACC.discThickness;
+		_disc.spin = ACC.discSpin;
+
+		return _disc;
+
+	}
+
+	get disc() {
+
+		return _disc;
 
 	}
 
@@ -588,6 +696,9 @@ export class Accretion {
 
 		if ( this.mass <= 0 ) return 0;
 		const dumped = this.mass;
+		// The disc empties where you are standing, so venting is visibly throwing
+		// something away rather than a counter resetting.
+		this.shred.releaseBound( 999, this.axis.x, this.axis.y, this.axis.z, 4.5 );
 		this.pool.fill( 0 );
 		this.mass = 0;
 		this.heat = Math.min( ACC.heatCeiling, this.heat + dumped * 0.02 );

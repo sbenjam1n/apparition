@@ -114,13 +114,41 @@ something already doing 9 m/s your way is free. A body you pull halfway in and
 then let go of keeps every joule you gave it, which is the whole reason not to
 eat everything.
 
-Firing drains the pool along the axis at 40 m/s. The material decides the *shape*
-of the shot: ~13 kg leaves as one concrete slug carrying 472 N·s, or as eight
-glass shards carrying 73 N·s each. Recoil is momentum conservation either way
-(§3.4) and it is a real shove — 6 to 8 m/s per trigger pull. Because panel damage
-is billed in joules, speed does far more work than mass: one shot now carries 8 to
-12 kJ against a 3.7 kJ activation threshold, so a single slug takes an intact
-partition to a passable hole.
+**Shards** (`shred.js`) — the ammunition is not rigid bodies. It cannot be: the
+solver caps at 640 with a contact graph behind each one, so "more debris" bought
+more cost and never bought the feeling of something being torn apart. Eight
+cuboids is a brick-throwing simulator however fast the bricks go.
+
+The split the wind-engineering literature already draws is the one to use. Debris
+is classed as compact, plate or rod and rated by the **Tachikawa number** — the
+ratio of aerodynamic force to weight, so area over mass. A brick has a terrible
+ratio and flies ballistically; a splinter has an enormous one and goes wherever
+the air goes. The large-eddy tornado studies find the same split from the other
+side: heavy debris is thrown out of the vortex by its own inertia while light
+debris stays trapped circulating in the core, and it is the fine material in the
+corner flow that actually alters the wind field.
+
+So there are two representations, split where the physics splits them. Rigid
+bodies stay the compact class — few, heavy, ballistic, colliding properly.
+Shards are the plate class: thousands of them, no pairwise anything, tested only
+against static planes, room colliders and the three weak panels. They are what
+the funnel carries and what a jet is made of, and they are drawn as
+**velocity-aligned stretched needles**, which is the single largest lever on
+whether fast debris reads as sharp or as boxes drifting past.
+
+Eating something no longer makes it vanish. It **bursts** — 13 shards for a 5 kg
+paver, 90 for a 430 kg bench, carrying the velocity the body arrived with and
+then spiralling in like everything else in the funnel. And what the disc carries
+is visible: bound shards orbit a ring set out in front of the viewpoint, filling
+as you eat and thinning as you spend.
+
+Firing drains the pool along the axis at 62 m/s as a **held stream**, not a
+click. A jet is a rate, so recoil is a continuous burn rather than a kick. The grain decides everything about the
+shot except its recoil: the same 16 kg/s leaves as 1140 glass needles a second or
+as 60 steel grains, identical mass flow and identical push, sandblasting versus
+punching. Shard strikes are billed in the same currency as a thrown chunk —
+joules — so a jet and a slug are comparable rather than each being a special
+case.
 
 Structure is not food — a chunk still welded into a wall is refused, because
 hoovering it out of the lattice would route around the entire destruction model.
@@ -138,8 +166,10 @@ Measured at the shipped numbers, on a 78 kg block released from 7m:
 | capture inside the cone | ~45% over the full 11m volume, mean 0.36 s; the misses are the lip and the mouth |
 | funnel held on a live panel, 4 s | 43 welds broken, 3 loose chunks eaten, 34 still welded and untouched |
 | solver, 107 loose bodies → after eating 85 | 0.33 → 0.21 ms/step, 21 → 3 contacts |
-| one shot | tile 2 pieces @ 211 N·s / 8.4 kJ, concrete 1 @ 472 / 9.4, glass 8 @ 73 / 11.7, steel 2 @ 276 / 11.0 |
-| one shot against an intact partition | activates it and opens it, every material |
+| eating a 5 / 80 / 430 kg body | bursts into 13 / 40 / 90 shards |
+| the stream, at 16 kg/s | tile 240/s, concrete 180/s, glass 1140/s, steel 60/s — same mass, same 14 m/s of recoil |
+| cutting an intact partition open | steel 0.5 s to bite and 1.4 s to breach, glass 0.6 / 1.9, concrete 0.9 / 2.1 |
+| 1527 shards | 0.103 ms/frame, against 0.41 ms/step for 120 rigid bodies |
 
 The slingshot curve is the whole mechanic in one row: a 0.4 s hold releases 2020
 N·s and 26 kJ — well over twice what a fired shot carries — and a 0.5 s hold
@@ -316,10 +346,10 @@ No enemies, objectives, annexation, containment, humans, lattice, coffins, or
 economy — anything that would let a bad flight model hide behind a good system.
 The watt meter exists only because destruction and the funnel need some cost to
 feel weighted, and because a feel test that cannot show you its cost curve cannot
-be tuned. There is no funnel *visual* at all yet, on purpose: the funnel is a rule
-that either feels like a skill or does not, and set dressing over an unproven rule
-only makes it harder to tell. Nor is there an artifact slot — everything
-consumable is currently consumed. The HUD is a development instrument, not interface design; §26
+be tuned. There is no artifact slot yet — everything consumable is
+currently consumed, and the "held object in peripheral vision" half of the
+inventory does not exist. The disc renders as orbiting shards rather than as
+occlusion at the frame edge, so the "mud on the lens" register is still to come. The HUD is a development instrument, not interface design; §26
 and §47.3 conclude the shipping game has no HUD at all.
 
 Known rough edges: player-vs-world collision is a 4-iteration push-out rather than

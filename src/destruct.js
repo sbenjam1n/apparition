@@ -61,6 +61,10 @@ class WeakPanel {
 		this.half = new THREE.Vector3( hx, hy, hz );
 		this.normal = spec.normal;
 
+		// What this panel is made of, for shard strike audio. The chunks carry it
+		// too, but the slab has to answer before it has any chunks.
+		this.materialKind = spec.materialKind ?? 1;
+
 		this.cols = spec.cols ?? 6;
 		this.rows = spec.rows ?? 7;
 
@@ -388,6 +392,74 @@ export class Destruction {
 			s.applyImpulse( i, impulse.x * falloff, impulse.y * falloff, impulse.z * falloff );
 
 		}
+
+	}
+
+	// Is any panel live? Lets the shard path skip the panel search entirely on the
+	// common frame where nothing has been opened yet.
+	get hasActive() {
+
+		for ( const p of this.panels ) if ( p.activated ) return true;
+		return false;
+
+	}
+
+	// A strike from something that is not a rigid body — the shard jet.
+	//
+	// Billed in the same currency as a thrown chunk, joules in and damage out at
+	// the same threshold, so a stream of small fast pieces and one slow heavy one
+	// are comparable rather than each being a special case. A jet that cut walls
+	// on its own private rule would be impossible to balance against anything.
+	strike( x, y, z, dx, dy, dz, joules ) {
+
+		for ( const p of this.panels ) {
+
+			_p.set( x, y, z );
+			if ( ! p.contains( _p, 0.12 ) ) continue;
+
+			if ( ! p.activated ) {
+
+				p.damage += joules * DAMAGE_PER_JOULE;
+
+				if ( p.damage >= ACTIVATION_THRESHOLD ) {
+
+					const n = p.normal;
+					const j = joules * 0.06;
+					this.activate( p, _p.clone(), { x: - n.x * j, y: - n.y * j, z: - n.z * j } );
+
+				}
+
+				return p;
+
+			}
+
+			// Already open: keep working on whatever is still hanging there. The
+			// jet has to be able to widen a hole, not just make one.
+			const s = this.solver;
+			let best = - 1, bestD = 1.2;
+
+			for ( let c = 0; c < p.chunks.length; c ++ ) {
+
+				const b = p.chunks[ c ];
+				if ( b < 0 || s.state[ b ] === 0 ) continue;
+				const d = Math.hypot( s.px[ b ] - x, s.py[ b ] - y, s.pz[ b ] - z );
+				if ( d < bestD ) { bestD = d; best = b; }
+
+			}
+
+			if ( best >= 0 ) {
+
+				const imp = joules * 0.02;
+				s.applyImpulse( best, dx * imp, dy * imp, dz * imp,
+					x - s.px[ best ], y - s.py[ best ], z - s.pz[ best ] );
+
+			}
+
+			return p;
+
+		}
+
+		return null;
 
 	}
 

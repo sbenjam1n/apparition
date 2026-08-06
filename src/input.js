@@ -41,8 +41,7 @@ export class Input {
 		this.mouseX = 0;
 		this.mouseY = 0;
 		this.intake = false;    // LMB held — the funnel is open
-		this.fire = false;      // RMB edge
-		this.fireHeld = false;
+		this.fire = false;      // RMB held — the disc channels while it is down
 		// Wheel selects which material fires. It is the one binding left that is
 		// both free and already means "switch what you are holding" to everyone
 		// who has played a shooter, which is the whole reason the inventory needs
@@ -91,7 +90,7 @@ export class Input {
 			this.keys = Object.create( null );
 			this._latched = Object.create( null );
 			this.intake = false;
-			this.fireHeld = false;
+			this.fire = false;
 			this.wheel = 0;
 
 		} );
@@ -100,7 +99,7 @@ export class Input {
 
 			if ( ! this.locked ) return;
 			if ( e.button === 0 ) this.intake = true;
-			if ( e.button === 2 ) this.fireHeld = true;
+			if ( e.button === 2 ) this.fire = true;
 			e.preventDefault();
 
 		} );
@@ -108,7 +107,7 @@ export class Input {
 		addEventListener( 'mouseup', e => {
 
 			if ( e.button === 0 ) this.intake = false;
-			if ( e.button === 2 ) { this.fire = this.fireHeld; this.fireHeld = false; }
+			if ( e.button === 2 ) this.fire = false;
 
 		} );
 
@@ -153,7 +152,7 @@ export class Input {
 				// Escape while holding the funnel open would otherwise leave it
 				// open — mouseup never arrives once the pointer is gone.
 				this.intake = false;
-				this.fireHeld = false;
+				this.fire = false;
 
 			}
 
@@ -212,8 +211,10 @@ export class Input {
 		this.mouseY = 0;
 
 		s.intake = this.intake;
+		// Held, not latched. Channelling is a rate, so the module wants to know
+		// whether the trigger is down this frame rather than whether it was
+		// released since the last one.
 		s.fire = this.fire;
-		this.fire = false;
 
 		// One step per sample regardless of how far the wheel spun, so a flicked
 		// trackpad advances one material rather than four.

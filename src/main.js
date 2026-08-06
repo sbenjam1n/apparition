@@ -27,6 +27,7 @@ import { Input } from './input.js';
 import { Accretion, ACC, MATERIAL_NAME } from './accretion.js';
 import { Destruction, addTestPanels, PANEL_STATE, PANEL_STATE_NAME } from './destruct.js';
 import { DustField } from './dust.js';
+import { ShredField, SHRED } from './shred.js';
 import { PostStack, POST } from './fx.js';
 import { ImpactAudio } from './audio.js';
 import { Hud } from './hud.js';
@@ -53,7 +54,10 @@ const room = buildRoom( scene, rig, solver );
 const debris = new DebrisField( scene, rig, solver );
 
 const flight = new Flight( solver );
-const accretion = new Accretion( solver, flight, debris );
+// Headroom for the glass case, which is the densest stream by an order of
+// magnitude — eleven hundred needles a second against eighty-four steel grains.
+const shred = new ShredField( scene, rig, 3200 );
+const accretion = new Accretion( solver, flight, debris, shred );
 const destruction = new Destruction( scene, rig, solver, debris );
 const panels = addTestPanels( destruction, rig, ROOM );
 flight.panels = panels;
@@ -152,7 +156,9 @@ destruction.onStateChange = ( panel, prev ) => {
 accretion.onConsume = ( kind, mass, x, y, z ) => {
 
 	audio.impact( 1.4 + Math.min( 6, mass * 0.055 ), kind, 0 );
-	dust.puff( x, y, z, 420 + mass * 6, 0, 1, 0 );
+	// Lighter than it was: the shard burst now carries the visual, and stacking a
+	// dust plume on top of it just fogs the thing you want to watch come apart.
+	dust.puff( x, y, z, 200 + mass * 3, 0, 1, 0 );
 
 	if ( mass > 55 ) {
 
@@ -163,8 +169,39 @@ accretion.onConsume = ( kind, mass, x, y, z ) => {
 
 };
 
-accretion.onFire = ( kind, count, speed ) => audio.release( count + Math.min( 6, speed ) );
+// The jet is a rate, so the sound has to be a rate too — a discrete clip per
+// frame would machine-gun. This ticks only when the stream starts or stops.
+let jetOn = false;
+accretion.onFire = ( kind, count, drawn ) => {
+
+	if ( ! jetOn ) { audio.release( 5 ); jetOn = true; }
+
+};
 accretion.onVent = dumped => audio.release( 4 + Math.min( 8, dumped * 0.01 ) );
+
+// A shard landing on something. Thousands of these a second would be thousands
+// of sounds and thousands of dust puffs, so both are rationed by a frame budget
+// — the strike itself always counts, only the feedback is sampled.
+let strikeBudget = 0;
+
+// Every static thing a shard can land on. Assembled once — the room does not
+// gain colliders at runtime, and rebuilding this per frame would be the only
+// allocation in the shard path.
+const shredWorld = { planes: solver.planes, boxes: solver.boxes, panels };
+
+shred.onStrike = ( x, y, z, nx, ny, nz, joules, material, panel ) => {
+
+	if ( panel || destruction.hasActive ) destruction.strike( x, y, z, - nx, - ny, - nz, joules );
+
+	if ( strikeBudget > 0 && joules > 6 ) {
+
+		strikeBudget --;
+		audio.impact( 0.9 + Math.min( 3, joules * 0.02 ), material, 0 );
+		if ( joules > 30 ) dust.puff( x, y, z, 90 + joules * 4, nx, ny, nz );
+
+	}
+
+};
 
 // --- quality governor -------------------------------------------------------
 //
@@ -302,16 +339,42 @@ gAcc.add( ACC, 'viscosity', 0, 12, 0.1 ).name( 'viscosity (1/s)' );
 gAcc.add( ACC, 'axisLag', 0, 0.5, 0.005 ).name( 'axis lag (s)' );
 gAcc.add( ACC, 'freeSpeed', 1, 30, 0.5 ).name( 'free speed (§10.2)' );
 gAcc.add( ACC, 'capacity', 100, 4000, 25 ).name( 'capacity (kg)' );
-gAcc.add( ACC, 'fireSpeed', 2, 90, 1 ).name( 'fire speed (m/s)' );
-gAcc.add( ACC, 'fireBudget', 100, 6000, 25 ).name( 'fire budget (N·s)' );
-gAcc.add( ACC, 'fireMass', 2, 400, 1 ).name( 'kg per shot' );
-gAcc.add( ACC, 'maxBurst', 1, 32, 1 ).name( 'max pieces / shot' );
+gAcc.add( ACC, 'fireSpeed', 5, 140, 1 ).name( 'muzzle (m/s)' );
+gAcc.add( ACC, 'channelRate', 2, 200, 1 ).name( 'kg/s channelled' );
+gAcc.add( ACC, 'streamDensity', 0.1, 4, 0.05 ).name( 'stream density' );
+gAcc.add( ACC, 'channelSpread', 0, 0.6, 0.01 ).name( 'jet spread' );
+gAcc.add( ACC, 'jetSwirl', 0, 1, 0.01 ).name( 'jet swirl' );
+// The visible corkscrew. Costs nothing and, unlike real tangential speed,
+// does not walk the stream off whatever you are pointing at.
+gAcc.add( ACC, 'jetTwist', 0, 120, 1 ).name( 'jet twist (rad/s)' );
+gAcc.add( ACC, 'discOffset', 0, 6, 0.05 ).name( 'disc distance' );
+gAcc.add( ACC, 'discRadius', 0.4, 5, 0.05 ).name( 'disc radius' );
+gAcc.add( ACC, 'discSpin', 0, 16, 0.1 ).name( 'disc spin' );
+gAcc.add( ACC, 'discShards', 0, 1600, 10 ).name( 'disc shards' );
 gAcc.add( ACC, 'carryWattsPerKg', 0, 0.2, 0.002 ).name( 'W per kg carried' );
 gAcc.add( ACC, 'intakeWattsPerKg', 0, 0.6, 0.005 ).name( 'W per kg·a' );
 gAcc.add( accretion, 'selected', {
 	tile: MATERIAL_KIND.TILE, concrete: MATERIAL_KIND.CONCRETE,
 	glass: MATERIAL_KIND.GLASS, steel: MATERIAL_KIND.STEEL
 } ).name( 'firing (wheel)' ).listen();
+
+const gShred = gui.addFolder( 'Shards' );
+// Stretch is the whole look. At zero these are specks; the streak is what makes
+// fast debris read as sharp rather than as boxes drifting past.
+gShred.add( SHRED, 'stretch', 0, 0.08, 0.001 ).name( 'stretch (m per m/s)' )
+	.onChange( v => { shred.uniforms.uStretch.value = v; } );
+gShred.add( SHRED, 'maxLength', 0.05, 2, 0.01 ).name( 'max length' )
+	.onChange( v => { shred.uniforms.uMaxLength.value = v; } );
+gShred.add( SHRED, 'width', 0.002, 0.14, 0.001 ).name( 'width' )
+	.onChange( v => { shred.uniforms.uWidth.value = v; } );
+// The screen-space floor. Drop it to zero and the field vanishes at range even
+// while the readout says a thousand shards a second are leaving.
+gShred.add( SHRED, 'minAngular', 0, 0.012, 0.0002 ).name( 'min angular width' )
+	.onChange( v => { shred.uniforms.uMinAngular.value = v; } );
+gShred.add( SHRED, 'drag', 0, 4, 0.05 ).name( 'drag (1/s)' );
+gShred.add( SHRED, 'lifeMax', 0.3, 8, 0.1 ).name( 'life (s)' );
+gShred.add( SHRED, 'strikeScale', 0, 0.3, 0.005 ).name( 'cut rate' );
+gShred.add( SHRED, 'bounce', 0, 0.9, 0.02 ).name( 'bounce' );
 
 const gPhys = gui.addFolder( 'Solver (AVBD)' );
 gPhys.add( solver, 'iterations', 1, 12, 1 ).name( 'iterations' );
@@ -395,8 +458,11 @@ const TUNE_GROUPS = [
 		'cameraLag', 'cameraLagPerKg', 'cameraLagMax', 'rotationLag', 'swayAmount' ] ],
 	[ 'ACC', ACC, [ 'reach', 'mouthAngle', 'horizon', 'intake', 'reaction', 'reactionCeiling',
 		'swirl', 'viscosity', 'axisLag',
-		'freeSpeed', 'capacity', 'fireSpeed', 'fireBudget', 'fireMass', 'maxBurst',
+		'freeSpeed', 'capacity', 'fireSpeed', 'channelRate', 'streamDensity', 'channelSpread', 'jetSwirl', 'jetTwist',
+		'discOffset', 'discRadius', 'discSpin', 'discShards',
 		'carryWattsPerKg', 'intakeWattsPerKg' ] ],
+	[ 'SHRED', SHRED, [ 'stretch', 'minLength', 'maxLength', 'width', 'minAngular',
+		'drag', 'lifeMin', 'lifeMax', 'bounce', 'strikeScale' ] ],
 	[ 'solver', solver, [ 'iterations', 'beta', 'alpha', 'gamma', 'postStabilize',
 		'sleepTime', 'gravity', 'maxSubsteps', 'maxTravel', 'creepRate' ] ],
 	[ 'POST', POST, [ 'bloomStrength', 'bloomThreshold', 'bloomRadius',
@@ -521,6 +587,7 @@ const actions = {
 	clearDebris() {
 
 		accretion.vent();
+		shred.clear();
 		dust.clear();
 		for ( let i = 0; i < solver.count; i ++ ) if ( solver.state[ i ] !== 0 ) solver.release( i );
 		scatterProps( solver, ( i, kind ) => debris.register( i, kind ) );
@@ -541,6 +608,7 @@ gui.add( actions, 'relight' ).name( 'restore lighting' );
 // have to go find is a panel nobody opens.
 gFlight.close();
 gCam.close();
+gShred.close();
 gPhys.close();
 gJoint.close();
 gWarp.close();
@@ -642,6 +710,8 @@ function frame() {
 	accretion.update( state, Math.max( dt, 1e-4 ), destruction );
 	destruction.update( dt, flight );
 	debris.update( dt );
+	strikeBudget = 6;
+	shred.update( dt, shredWorld, accretion.disc, shred.onStrike );
 	dust.update( dt, flight.viewPosition, flight.velocity );
 
 	rig.uniforms.uTime.value = elapsed;
@@ -684,6 +754,9 @@ function frame() {
 		inFunnel: accretion.inFunnel,
 		consumed: accretion.consumed,
 		stalled: accretion.stalled,
+		shards: shred.live,
+		jetRate: accretion.jetRate,
+		struck: shred.struck,
 		speed: flight.velocity.length(),
 		light: rig.remaining(),
 		dilation,
@@ -704,5 +777,5 @@ addEventListener( 'resize', () => {
 frame();
 
 // Exposed for console poking during tuning.
-window.APPARITION = { solver, rig, flight, accretion, destruction, debris, dust, panels, quality, post,
-	TUNING, ACC, POST, copyTuning, readTuning, formatTuning };
+window.APPARITION = { solver, rig, flight, accretion, destruction, debris, dust, shred, panels, quality, post,
+	TUNING, ACC, POST, SHRED, copyTuning, readTuning, formatTuning };

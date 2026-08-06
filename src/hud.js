@@ -90,6 +90,9 @@ export class Hud {
 				`${data.stalled ? `   <span class="warn">FULL</span>` : '' }\n` +
 			`       ${disc}\n` +
 			`funnel <b>${data.inFunnel}</b> in draw   <b>${data.consumed}</b> eaten\n` +
+			`shards <b>${data.shards}</b> aloft` +
+				`${data.jetRate > 0 ? `   <b>${data.jetRate.toFixed( 0 )}</b>/s channelling` : '' }` +
+				`${data.struck > 0 ? `   <b>${data.struck}</b> hits` : '' }\n` +
 			`speed  <b>${data.speed.toFixed( 1 )}</b> m/s${data.dilation > 0.01 ? `   <span class="warn">dilated 1:${( 1 / Math.max( 0.02, 1 - data.dilation ) ).toFixed( 0 )}</span>` : '' }\n` +
 			`light  ${this._bar( data.light, 18 )} <b>${( data.light * 100 ).toFixed( 0 )}</b>%\n` +
 			`dust   ${this._bar( Math.min( 1, data.suspended / 12 ), 18 )} <b>${data.dust}</b> aloft\n` +
