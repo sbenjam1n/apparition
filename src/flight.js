@@ -96,6 +96,7 @@ export class Flight {
 		this.load = 0;            // kg currently held, drives camera lag
 		this.lastImpact = 0;      // speed of the most recent wall hit, for audio
 		this.grounded = false;
+		this._levelAxis = 2;   // +Y, the room's floor
 
 		// Weak panels block the player cell by cell, so a hole you made is a hole
 		// you can fly through and nothing else is. §31.3's aperture question
@@ -152,15 +153,26 @@ export class Flight {
 		const rotThrust = this._readRotation( input );
 		this._substepRotation( rotThrust, dt );
 
-		// Body-axis integration: pitch about local X, yaw about local Y, roll
-		// about local Z, applied in that order so yaw does not tilt the horizon.
+		// Turn banking, three-descent's sequence exactly: un-apply the old bank,
+		// integrate the rotation, compute the new bank, re-apply it. The bank has
+		// to be a real rotation that gets removed and restored — tracking it as a
+		// number and never rotating by it, which is what this did, means the ship
+		// simply never banks into a turn.
+		const oldTurnroll = this.turnroll;
+		this._rotateLocal( 0, 0, 1, - oldTurnroll );
+
 		const rv = this.rotVelocity;
-		this._rotateLocal( 1, 0, 0, rv.x * dt );
 		this._rotateLocal( 0, 1, 0, rv.y * dt );
+		this._rotateLocal( 1, 0, 0, rv.x * dt );
 		this._rotateLocal( 0, 0, 1, rv.z * dt );
 
 		this._turnroll( dt );
-		if ( T.autoLevel ) this._autoLevel( dt );
+		this._rotateLocal( 0, 0, 1, this.turnroll );
+
+		// Manual roll wins outright, so auto-level cannot counter-steer against
+		// Q/E in the same frame.
+		const manualRoll = input.rollLeft || input.rollRight;
+		if ( T.autoLevel && ! manualRoll ) this._autoLevel( dt );
 
 		this.basis();
 
@@ -312,20 +324,49 @@ export class Flight {
 
 	}
 
-	// Surface anchoring, softened (§3.3). Descent aligned to the nearest segment
-	// side normal; with no segments we align to world up, but only when the nose
-	// is not pointing near-vertically, and only above a dead band — so it never
-	// fights a deliberate barrel roll.
+	// Surface anchoring (§3.3), and the important part is *what it levels to*.
+	//
+	// Descent picks the side normal of the segment you are in that is most
+	// aligned with the ship's own up vector, then rolls you onto it. It does not
+	// know about the world's floor and never pulls you back toward it. A box
+	// room's six side normals are exactly the six world axes, so for this space
+	// the algorithm reduces to snapping to whichever axis your up is nearest.
+	//
+	// That is the whole difference: aligning to world up means flying to the
+	// ceiling rolls you to face the floor, which is what this was doing. Aligning
+	// to the nearest axis means the ceiling becomes your floor when you are
+	// oriented toward it, and a deliberate barrel roll settles into whichever of
+	// the six orientations you left it nearest to.
 	_autoLevel( dt ) {
 
 		_up.set( 0, 1, 0 ).applyQuaternion( this.quaternion );
 		_fwd.set( 0, 0, - 1 ).applyQuaternion( this.quaternion );
 
-		if ( Math.abs( _fwd.y ) >= 0.5 ) return;
+		let dx = 0, dy = 0, dz = 0, best = - Infinity, bestAxis = 0;
 
-		// Project world up and current up into the plane normal to forward.
-		const dotWF = _fwd.y;
-		const px = - dotWF * _fwd.x, py = 1 - dotWF * _fwd.y, pz = - dotWF * _fwd.z;
+		for ( let a = 0; a < 6; a ++ ) {
+
+			const s = a & 1 ? - 1 : 1;
+			const ax = a < 2 ? s : 0;
+			const ay = a >= 2 && a < 4 ? s : 0;
+			const az = a >= 4 ? s : 0;
+			let d = ax * _up.x + ay * _up.y + az * _up.z;
+			// Hysteresis, so a ship sitting exactly between two faces does not
+			// flip its target every frame and chatter in place.
+			if ( a === this._levelAxis ) d += 0.06;
+			if ( d > best ) { best = d; dx = ax; dy = ay; dz = az; bestAxis = a; }
+
+		}
+
+		this._levelAxis = bestAxis;
+
+		// Nose pointing near-straight along the chosen up: there is no meaningful
+		// roll to correct, so leave it alone.
+		const dotWF = dx * _fwd.x + dy * _fwd.y + dz * _fwd.z;
+		if ( Math.abs( dotWF ) >= 0.5 ) return;
+
+		// Project the target up and the current up into the plane normal to forward.
+		const px = dx - dotWF * _fwd.x, py = dy - dotWF * _fwd.y, pz = dz - dotWF * _fwd.z;
 		const pm = Math.hypot( px, py, pz );
 		if ( pm < 1e-3 ) return;
 
@@ -339,7 +380,17 @@ export class Flight {
 
 		const dot = Math.max( - 1, Math.min( 1, ux * nx + uy * ny + uz * nz ) );
 		const crossF = ( uy * nz - uz * ny ) * _fwd.x + ( uz * nx - ux * nz ) * _fwd.y + ( ux * ny - uy * nx ) * _fwd.z;
-		const delta = Math.atan2( crossF, dot ) + this.turnroll;
+
+		// atan2 here is the rotation about *forward* that carries the current up
+		// onto the target. The correction is applied about local +Z, and forward
+		// is local -Z, so it has to be negated — three-descent does the same
+		// negation by converting into Descent coordinates first. Without it the
+		// ship rolls away from its target and parks on the 45-degree boundary
+		// between two axes, which is where every orientation was ending up.
+		//
+		// The bank is subtracted rather than corrected: it was applied
+		// deliberately this frame and auto-level should leave it alone.
+		const delta = - Math.atan2( crossF, dot ) - this.turnroll;
 
 		if ( Math.abs( delta ) <= DAMP_ANG ) return;
 
