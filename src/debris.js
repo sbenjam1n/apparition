@@ -63,8 +63,8 @@ export class DebrisField {
 
 	}
 
-	// Telekinesis re-raises this every frame it is holding, so releasing shows
-	// immediately while cooling takes its time — heat has lag (§5.3).
+	// The funnel re-raises this every frame it is pulling, so leaving the draw
+	// shows immediately while cooling takes its time — heat has lag (§5.3).
 	setHeat( bodyIndex, value ) {
 
 		if ( value > this.bodyHeat[ bodyIndex ] ) this.bodyHeat[ bodyIndex ] = value;

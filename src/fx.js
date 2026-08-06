@@ -18,7 +18,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { AfterimagePass } from 'three/addons/postprocessing/AfterimagePass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { TK } from './telekinesis.js';
+import { ACC } from './accretion.js';
 
 const _size = new THREE.Vector2();
 
@@ -190,7 +190,7 @@ export class PostStack {
 		// which nobody will ever see.
 		this.frame = ( this.frame + 1 ) % 65536;
 
-		const load = Math.min( 1, watts / TK.wattScale );
+		const load = Math.min( 1, watts / ACC.wattScale );
 		this.bloom.strength = POST.bloomStrength * ( 1 + load * 0.55 + Math.min( heat / 100, 1 ) * 0.25 );
 
 		// Trails belong to dilation — a charging phase whose payload lands when

@@ -364,6 +364,38 @@ export class AVBDSolver {
 
 	}
 
+	// How many live joints touch this body. O(1): _buildJointAdjacency already
+	// prefix-sums the degree into bodyJointStart every step.
+	jointDegree( i ) {
+
+		return this.bodyJointStart[ i + 1 ] - this.bodyJointStart[ i ];
+
+	}
+
+	// Remove a body from the world *now*, joints and all.
+	//
+	// release() alone is safe only because _buildJointAdjacency retires stale
+	// joints on the next step. Accretion breaks that assumption: it consumes and
+	// spawns within the same frame, so a freed slot can be popped again before
+	// the sweep runs, and the new body inherits both the old weld and its
+	// jointPairs contact suppression. Tearing the joints down at the point of
+	// removal closes that window instead of relying on ordering.
+	consume( i ) {
+
+		if ( this.state[ i ] === 0 ) return;
+
+		for ( let j = 0; j < this.jointCount; j ++ ) {
+
+			if ( this.jState[ j ] !== 1 ) continue;
+			if ( this.jA[ j ] === i || this.jB[ j ] === i ) this.breakJoint( j );
+
+		}
+
+		this._clearWarmStart( i );
+		this.release( i );
+
+	}
+
 	_clearWarmStart( i ) {
 
 		const base = i * CORNERS * MAX_COLLIDERS;
@@ -392,7 +424,7 @@ export class AVBDSolver {
 
 	}
 
-	// Wake everything within `r` of a point — used by impacts and telekinesis so
+	// Wake everything within `r` of a point — used by impacts and the funnel so
 	// a settled pile reacts instead of sitting there like scenery.
 	wakeRadius( x, y, z, r ) {
 

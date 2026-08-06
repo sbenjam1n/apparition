@@ -67,12 +67,29 @@ export class Hud {
 
 		const wattBar = this._bar( Math.min( 1, data.watts / data.wattScale ), 18 );
 
+		// The pool is the inventory and the fuel gauge at once. Eventually this is
+		// the rim of the frame silting up (§44-adjacent, "mud on a camera"); until
+		// that exists it is four numbers, and the selected one is marked because
+		// that is the only part the player actually chooses.
+		const disc = data.pool ? Array.from( data.pool, ( kg, k ) => {
+
+			const name = data.materialNames[ k ];
+			const cell = `${name} ${kg.toFixed( 0 )}`;
+			return k === data.selected ? `<b>[${cell}]</b>` : `<span style="opacity:.45">${cell}</span>`;
+
+		} ).join( '  ' ) : '';
+
+		const sat = data.capacity > 0 ? data.poolMass / data.capacity : 0;
+
 		this.el.innerHTML =
 			`<b>${this.fps.toFixed( 0 ).padStart( 3 )}</b> fps   tier <b>${data.tier}</b>   dpr <b>${data.dpr.toFixed( 2 )}</b>\n` +
 			`bodies <b>${data.active}</b> awake  <b>${data.asleep}</b> settled  <b>${data.contacts}</b> contacts  x<b>${data.substeps}</b>\n` +
 			`\n` +
 			`draw   ${wattBar} <b>${data.watts.toFixed( 0 ).padStart( 4 )}</b> W\n` +
-			`held   <b>${data.held}</b>  ${data.load.toFixed( 1 )} kg\n` +
+			`disc   ${this._bar( sat, 18 )} <b>${data.poolMass.toFixed( 0 )}</b>/${data.capacity | 0} kg` +
+				`${data.stalled ? `   <span class="warn">FULL</span>` : '' }\n` +
+			`       ${disc}\n` +
+			`funnel <b>${data.inFunnel}</b> in draw   <b>${data.consumed}</b> eaten\n` +
 			`speed  <b>${data.speed.toFixed( 1 )}</b> m/s${data.dilation > 0.01 ? `   <span class="warn">dilated 1:${( 1 / Math.max( 0.02, 1 - data.dilation ) ).toFixed( 0 )}</span>` : '' }\n` +
 			`light  ${this._bar( data.light, 18 )} <b>${( data.light * 100 ).toFixed( 0 )}</b>%\n` +
 			`dust   ${this._bar( Math.min( 1, data.suspended / 12 ), 18 )} <b>${data.dust}</b> aloft\n` +

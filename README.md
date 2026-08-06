@@ -1,8 +1,8 @@
-# APPARITION — feel test 01
+# APPARITION — feel test 02
 
-A ground-up 6DOF prototype under MIT. Flight, telekinesis, authored destruction,
-AVBD debris, and a reactive light rig, in one tiled liminal room with nothing
-else running.
+A ground-up 6DOF prototype under MIT. Flight, an accretion funnel, authored
+destruction, AVBD debris, and a reactive light rig, in one tiled liminal room
+with nothing else running.
 
 This exists to answer one question, which the design index calls **the killing
 test** (§29, Phase 0):
@@ -10,6 +10,14 @@ test** (§29, Phase 0):
 > Is flying, grabbing and throwing heavy objects with Newtonian recoil delightful
 > in an empty room — no enemies, no economy, no dilation? Answer this in week two,
 > not month eight.
+
+Feel test 02 changes what "grabbing" means. The apparition is not a point that
+carries objects around itself; it is a tornado with an event horizon. Matter
+inside the funnel is drawn in and spun, matter that crosses the horizon is
+consumed into a per-material pool, and the pool is fired back out as debris. The
+question the change is meant to answer is narrower than the one above and it is
+the only reason the funnel exists yet: **does holding something at the lip feel
+like a skill, and does eating it feel like a decision?**
 
 Everything else in the index is superstructure over that, so this build runs
 exactly that experiment and adds only what is needed to judge it honestly.
@@ -37,11 +45,12 @@ requirement is a browser with WebGL2. Click to lock the pointer.
 | mouse | pitch / yaw |
 | arrow keys | pitch / yaw — held and exact |
 | `Ctrl` | burn — extra thrust |
-| `LMB` | grab and hold; objects orbit you |
-| `RMB` | throw the orbit (recoil applies) |
-| `R` | release the orbit gently |
+| `LMB` | intake — hold the funnel open |
+| `RMB` | fire the selected material (recoil applies) |
+| wheel | switch material |
+| `R` | vent — dump the load; the mass is gone |
 | `F` | probe — reads mass, material, structural weakness |
-| wheel | dilation dial |
+| alt + wheel | dilation dial |
 | `G` | reset position |
 | `P` | copy current tuning to the clipboard |
 | `Tab` | show / hide the tuning panel |
@@ -49,7 +58,7 @@ requirement is a browser with WebGL2. Click to lock the pointer.
 
 **Open the tuning panel.** Feel cannot be judged from someone else's numbers, and
 the panel is the actual instrument here — the rest of the build is apparatus
-around it. Flight, camera, telekinesis, solver and lighting are all live.
+around it. Flight, camera, accretion, solver and lighting are all live.
 
 **`P` copies what you dialled.** It writes the diff against the build defaults to
 the clipboard as pasteable assignments, and prints the same thing to the console
@@ -76,13 +85,55 @@ the camera trails the player's transform on a spring that gets heavier as you ca
 more. A viewpoint that lags input has mass, and mass reads as embodiment (§47.2)
 — it is the only body this character gets.
 
-**Telekinesis** (`telekinesis.js`) — probe, grab, hold, throw. Held objects orbit
-you and do five jobs at once (§47.3): frame of reference, inventory, cover,
-self-readout, and liability. Cost is mass × acceleration (§8.3), so matching
-something's existing motion is nearly free and launching from rest is not. Each
-throw draws on a fixed impulse budget, which is the single number that makes the
-economy work: a 10kg paver takes the full speed and shoves you 2.5 m/s, while the
-430kg bench eats the whole budget, barely moves, and launches *you* at 13 m/s.
+**Accretion** (`accretion.js`) — probe, intake, consume, fire, vent. This
+supersedes the held-object orbit §47.3 built the body out of, and the reason is
+that deflect-versus-consume becomes *spatial* instead of a button. Three things
+fall out of that:
+
+- **The horizon is always live.** A sphere around the viewpoint; anything inside
+  it is consumed, whether or not you meant it. Fly into your own wreckage and it
+  goes. It is also the only garbage collector this build has — consumed bodies
+  leave the solver instead of piling up against its cap.
+- **The funnel is directional and lagged.** A cone opening from the horizon along
+  the look axis, with pull falling off toward the lip and toward the mouth.
+  Squaring the radial term is what gives the lip its softness, and the lip is
+  where holding happens. Gravity is deliberately *not* cancelled inside it, so
+  heavy things sag out of the edge on their own.
+- **Swirl is not decoration.** Most of the pull is spent tangentially. Tangential
+  speed is angular momentum and angular momentum is what keeps matter *out* of
+  the horizon, so holding something at the lip is holding its orbit up.
+
+Cost is still §8.3 — mass × acceleration — discounted by how much of the motion
+you did not have to originate (§10.2). Pulling from rest is full price; steering
+something already doing 9 m/s your way is free. A body you pull halfway in and
+then let go of keeps every joule you gave it, which is the whole reason not to
+eat everything.
+
+Firing drains the pool along the axis. The material decides the *shape* of the
+shot rather than its recoil: the same 25 kg leaves as one concrete slug carrying
+400 N·s or as thirteen glass shards carrying 29 N·s each. Recoil is momentum
+conservation either way (§3.4) and it is a real shove.
+
+Structure is not food — a chunk still welded into a wall is refused, because
+hoovering it out of the lattice would route around the entire destruction model.
+Walls come apart under force, not under suction. Holding the funnel on a live
+panel still breaks welds; it just cannot skip the step.
+
+Measured at the shipped numbers, on a 78 kg block:
+
+| | |
+|---|---|
+| slingshot, 0.2 / 0.4 / 0.6 s hold | 5.9 / 10.3 / 14.0 m/s — 462 / 811 / 1102 N·s |
+| hold past 0.8 s | eaten instead |
+| cost at 0 / 6 / 12 m/s already inbound | 307 / 162 / 18 W |
+| capture inside the cone | ~68%; the misses are the lip and the mouth |
+| funnel held on a live panel, 4 s | 28 welds broken, 4 loose chunks eaten, 33 still welded and untouched |
+| solver, 107 loose bodies → after eating 84 | 0.27 → 0.21 ms/step, 21 → 3 contacts |
+| one shot of 25 kg | tile 3 pieces @ 130 N·s, concrete 1 @ 409, glass 13 @ 29, steel 1 @ 216 |
+
+The slingshot curve is the whole mechanic in one row: a 0.6 s hold releases more
+momentum than a fired shot carries, and a 0.8 s hold releases nothing because you
+ate it. That is the decision the horizon was added to create.
 
 **Destruction** (`destruct.js`) — authored chunk sets welded together by a joint
 graph, so panels hole where you hit them instead of detaching all at once. See
@@ -251,15 +302,19 @@ across the room at 40 m/s, so they are separate numbers (`mass`, `recoilMass`).
 
 No enemies, objectives, annexation, containment, humans, lattice, coffins, or
 economy — anything that would let a bad flight model hide behind a good system.
-The watt and heat meters exist only because destruction and telekinesis need some
-cost to feel weighted, and because a feel test that cannot show you its cost curve
-cannot be tuned. The HUD is a development instrument, not interface design; §26
+The watt meter exists only because destruction and the funnel need some cost to
+feel weighted, and because a feel test that cannot show you its cost curve cannot
+be tuned. There is no funnel *visual* at all yet, on purpose: the funnel is a rule
+that either feels like a skill or does not, and set dressing over an unproven rule
+only makes it harder to tell. Nor is there an artifact slot — everything
+consumable is currently consumed. The HUD is a development instrument, not interface design; §26
 and §47.3 conclude the shipping game has no HUD at all.
 
 Known rough edges: player-vs-world collision is a 4-iteration push-out rather than
 a swept test (fine at these speeds, would tunnel at Descent speeds); pair contacts
-degrade under deep interpenetration; the input budget flagged in §51.7 is
-unresolved and deliberately left visible rather than papered over with modifiers.
+degrade under deep interpenetration; and the input budget flagged in §51.7 has now
+actually run out — material select and the dilation dial both want the wheel, and
+alt is standing in for a resolution that does not exist yet.
 
 ## Deploying
 

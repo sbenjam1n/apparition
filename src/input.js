@@ -24,7 +24,7 @@ const DEFAULTS = {
 	yawRight: [ 'ArrowRight' ],
 	burn: [ 'ControlLeft', 'ControlRight' ],
 	probe: [ 'KeyF' ],
-	releaseOrbit: [ 'KeyR' ],
+	vent: [ 'KeyR' ],
 	reset: [ 'KeyG' ],
 	copyTuning: [ 'KeyP' ]
 };
@@ -40,9 +40,14 @@ export class Input {
 
 		this.mouseX = 0;
 		this.mouseY = 0;
-		this.grab = false;      // LMB held
-		this.throw = false;     // RMB edge
-		this.throwHeld = false;
+		this.intake = false;    // LMB held — the funnel is open
+		this.fire = false;      // RMB edge
+		this.fireHeld = false;
+		// Wheel selects which material fires. It is the one binding left that is
+		// both free and already means "switch what you are holding" to everyone
+		// who has played a shooter, which is the whole reason the inventory needs
+		// no menu (§51.7 has no room for one).
+		this.wheel = 0;
 
 		this.state = {
 			forward: false, back: false, left: false, right: false,
@@ -81,25 +86,48 @@ export class Input {
 
 		addEventListener( 'keyup', e => { this.keys[ e.code ] = false; } );
 
-		addEventListener( 'blur', () => { this.keys = Object.create( null ); this._latched = Object.create( null ); } );
+		addEventListener( 'blur', () => {
+
+			this.keys = Object.create( null );
+			this._latched = Object.create( null );
+			this.intake = false;
+			this.fireHeld = false;
+			this.wheel = 0;
+
+		} );
 
 		domElement.addEventListener( 'mousedown', e => {
 
 			if ( ! this.locked ) return;
-			if ( e.button === 0 ) this.grab = true;
-			if ( e.button === 2 ) this.throwHeld = true;
+			if ( e.button === 0 ) this.intake = true;
+			if ( e.button === 2 ) this.fireHeld = true;
 			e.preventDefault();
 
 		} );
 
 		addEventListener( 'mouseup', e => {
 
-			if ( e.button === 0 ) this.grab = false;
-			if ( e.button === 2 ) { this.throw = this.throwHeld; this.throwHeld = false; }
+			if ( e.button === 0 ) this.intake = false;
+			if ( e.button === 2 ) { this.fire = this.fireHeld; this.fireHeld = false; }
 
 		} );
 
 		domElement.addEventListener( 'contextmenu', e => e.preventDefault() );
+
+		// Alt is the tiebreak, and it is worth naming why there is one. §51.7 warned
+		// the input budget was over-subscribed and must not be discovered late;
+		// this is where it surfaces. Two continuous dials — which material fires,
+		// and how far time is wound down — both want the wheel, and there is no
+		// third good home for either. Bare wheel goes to the material because that
+		// is the binding a shooter player already has, and dilation takes the
+		// modifier because it is a dial you set, not one you ride.
+		addEventListener( 'wheel', e => {
+
+			if ( ! this.locked ) return;
+			if ( ! e.altKey ) this.wheel += e.deltaY;
+			e.preventDefault();
+
+		}, { passive: false } );
 
 		addEventListener( 'mousemove', e => {
 
@@ -118,7 +146,16 @@ export class Input {
 			// and stops swallowing clicks, so Escape gives you the cursor over a
 			// running world with the tuning panel usable.
 			if ( this.locked ) gate.classList.add( 'compact' );
-			if ( ! this.locked ) this.keys = Object.create( null );
+
+			if ( ! this.locked ) {
+
+				this.keys = Object.create( null );
+				// Escape while holding the funnel open would otherwise leave it
+				// open — mouseup never arrives once the pointer is gone.
+				this.intake = false;
+				this.fireHeld = false;
+
+			}
 
 		} );
 
@@ -174,9 +211,14 @@ export class Input {
 		this.mouseX = 0;
 		this.mouseY = 0;
 
-		s.grab = this.grab;
-		s.throw = this.throw;
-		this.throw = false;
+		s.intake = this.intake;
+		s.fire = this.fire;
+		this.fire = false;
+
+		// One step per sample regardless of how far the wheel spun, so a flicked
+		// trackpad advances one material rather than four.
+		s.cycle = this.wheel > 1 ? 1 : this.wheel < - 1 ? - 1 : 0;
+		this.wheel = 0;
 
 		return s;
 

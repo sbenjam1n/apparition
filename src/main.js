@@ -8,7 +8,7 @@
 //
 // What is deliberately absent: enemies, objectives, annexation, containment,
 // humans, and any economy that would let a bad flight model hide behind a good
-// system. The draw meter is present because telekinesis needs *some* cost to
+// system. The draw meter is present because the funnel needs *some* cost to
 // feel weighted and because a feel test that cannot show you its cost curve
 // cannot be tuned. Thermal debt (§5.3) is computed and drives bloom, but it is
 // deliberately not on the readout: nothing in this build has a consequence that
@@ -24,7 +24,7 @@ import { buildRoom, scatterProps, ROOM, MATERIAL_KIND } from './room.js';
 import { DebrisField } from './debris.js';
 import { Flight, TUNING } from './flight.js';
 import { Input } from './input.js';
-import { Telekinesis, TK } from './telekinesis.js';
+import { Accretion, ACC, MATERIAL_NAME } from './accretion.js';
 import { Destruction, addTestPanels, PANEL_STATE, PANEL_STATE_NAME } from './destruct.js';
 import { DustField } from './dust.js';
 import { PostStack, POST } from './fx.js';
@@ -53,7 +53,7 @@ const room = buildRoom( scene, rig, solver );
 const debris = new DebrisField( scene, rig, solver );
 
 const flight = new Flight( solver );
-const telekinesis = new Telekinesis( solver, flight, debris );
+const accretion = new Accretion( solver, flight, debris );
 const destruction = new Destruction( scene, rig, solver, debris );
 const panels = addTestPanels( destruction, rig, ROOM );
 flight.panels = panels;
@@ -143,8 +143,17 @@ destruction.onStateChange = ( panel, prev ) => {
 
 };
 
-telekinesis.onThrow = ( count, speed ) => audio.release( count + Math.min( 6, speed ) );
-telekinesis.onGrab = () => audio.impact( 1.6, MATERIAL_KIND.STEEL, 0 );
+// Consumption is silent geometry unless it is heard. A short material-coloured
+// tick per body eaten is enough to tell a bench from a shard without a readout.
+accretion.onConsume = ( kind, mass, x, y, z ) => {
+
+	audio.impact( 0.5 + Math.min( 3.2, mass * 0.02 ), kind, 0 );
+	dust.puff( x, y, z, 220 + mass * 3, 0, 1, 0 );
+
+};
+
+accretion.onFire = ( kind, count, speed ) => audio.release( count + Math.min( 6, speed ) );
+accretion.onVent = dumped => audio.release( 4 + Math.min( 8, dumped * 0.01 ) );
 
 // --- quality governor -------------------------------------------------------
 //
@@ -263,16 +272,31 @@ gCam.add( TUNING, 'rotationLag', 0, 0.2, 0.002 ).name( 'rotation lag' );
 gCam.add( TUNING, 'swayAmount', 0, 3, 0.05 ).name( 'sway' );
 gCam.add( camera, 'fov', 55, 110, 1 ).name( 'fov' ).onChange( () => camera.updateProjectionMatrix() );
 
-const gTk = gui.addFolder( 'Telekinesis' );
-gTk.add( TK, 'reachRadius', 2, 20, 0.5 ).name( 'reach' );
-gTk.add( TK, 'orbitBase', 0.5, 4, 0.05 ).name( 'orbit radius' );
-gTk.add( TK, 'orbitPerItem', 0, 0.6, 0.01 ).name( 'orbit / item' );
-gTk.add( TK, 'maxHeld', 1, 24, 1 ).name( 'max held' );
-gTk.add( TK, 'servoStiffness', 3, 40, 0.5 ).name( 'grip' );
-gTk.add( TK, 'throwSpeed', 2, 40, 0.5 ).name( 'throw speed' );
-gTk.add( TK, 'throwBudget', 100, 4000, 25 ).name( 'throw budget (N·s)' );
-gTk.add( TK, 'holdWattsPerKg', 0, 1, 0.01 ).name( 'W per kg held' );
-gTk.add( TK, 'accelWattsPerKg', 0, 0.6, 0.005 ).name( 'W per kg·a' );
+const gAcc = gui.addFolder( 'Accretion (funnel)' );
+gAcc.add( ACC, 'reach', 2, 20, 0.5 ).name( 'reach (m)' );
+gAcc.add( ACC, 'mouthAngle', 0.1, 1.3, 0.01 ).name( 'mouth half-angle' );
+gAcc.add( ACC, 'horizon', 0.3, 4, 0.05 ).name( 'event horizon (m)' );
+gAcc.add( ACC, 'intake', 0, 80, 0.5 ).name( 'pull (m/s²)' );
+gAcc.add( ACC, 'swirl', 0, 0.95, 0.01 ).name( 'swirl' );
+// Turn this to zero and the funnel becomes a merry-go-round: swirl with no
+// viscosity conserves angular momentum exactly and nothing ever falls in.
+gAcc.add( ACC, 'viscosity', 0, 12, 0.1 ).name( 'viscosity (1/s)' );
+// The one slider that is not about feel so much as tolerance: a funnel that
+// tracks the camera exactly is a cursor, and a funnel that lags is a third
+// motion vector on top of §47.6's two.
+gAcc.add( ACC, 'axisLag', 0, 0.5, 0.005 ).name( 'axis lag (s)' );
+gAcc.add( ACC, 'freeSpeed', 1, 30, 0.5 ).name( 'free speed (§10.2)' );
+gAcc.add( ACC, 'capacity', 100, 4000, 25 ).name( 'capacity (kg)' );
+gAcc.add( ACC, 'fireSpeed', 2, 40, 0.5 ).name( 'fire speed' );
+gAcc.add( ACC, 'fireBudget', 100, 4000, 25 ).name( 'fire budget (N·s)' );
+gAcc.add( ACC, 'fireMass', 5, 400, 5 ).name( 'kg per shot' );
+gAcc.add( ACC, 'maxBurst', 1, 32, 1 ).name( 'max pieces / shot' );
+gAcc.add( ACC, 'carryWattsPerKg', 0, 0.2, 0.002 ).name( 'W per kg carried' );
+gAcc.add( ACC, 'intakeWattsPerKg', 0, 0.6, 0.005 ).name( 'W per kg·a' );
+gAcc.add( accretion, 'selected', {
+	tile: MATERIAL_KIND.TILE, concrete: MATERIAL_KIND.CONCRETE,
+	glass: MATERIAL_KIND.GLASS, steel: MATERIAL_KIND.STEEL
+} ).name( 'firing (wheel)' ).listen();
 
 const gPhys = gui.addFolder( 'Solver (AVBD)' );
 gPhys.add( solver, 'iterations', 1, 12, 1 ).name( 'iterations' );
@@ -354,8 +378,9 @@ const TUNE_GROUPS = [
 		'mouseSensitivity', 'rollThrustScale', 'keyRotScale', 'invertY',
 		'autoLevel', 'autoLevelRate',
 		'cameraLag', 'cameraLagPerKg', 'cameraLagMax', 'rotationLag', 'swayAmount' ] ],
-	[ 'TK', TK, [ 'reachRadius', 'orbitBase', 'orbitPerItem', 'maxHeld', 'servoStiffness',
-		'throwSpeed', 'throwBudget', 'holdWattsPerKg', 'accelWattsPerKg' ] ],
+	[ 'ACC', ACC, [ 'reach', 'mouthAngle', 'horizon', 'intake', 'swirl', 'viscosity', 'axisLag',
+		'freeSpeed', 'capacity', 'fireSpeed', 'fireBudget', 'fireMass', 'maxBurst',
+		'carryWattsPerKg', 'intakeWattsPerKg' ] ],
 	[ 'solver', solver, [ 'iterations', 'beta', 'alpha', 'gamma', 'postStabilize',
 		'sleepTime', 'gravity', 'maxSubsteps', 'maxTravel', 'creepRate' ] ],
 	[ 'POST', POST, [ 'bloomStrength', 'bloomThreshold', 'bloomRadius',
@@ -479,7 +504,7 @@ const actions = {
 	},
 	clearDebris() {
 
-		telekinesis.releaseAll();
+		accretion.vent();
 		dust.clear();
 		for ( let i = 0; i < solver.count; i ++ ) if ( solver.state[ i ] !== 0 ) solver.release( i );
 		scatterProps( solver, ( i, kind ) => debris.register( i, kind ) );
@@ -500,13 +525,15 @@ gui.add( actions, 'relight' ).name( 'restore lighting' );
 // have to go find is a panel nobody opens.
 gFlight.close();
 gCam.close();
-gTk.close();
 gPhys.close();
 gJoint.close();
 gWarp.close();
 gDust.close();
 gPerf.close();
 gLook.open();
+// The funnel is what this build exists to test, so it starts open next to the
+// lighting rather than one click away.
+gAcc.open();
 let guiOpen = true;
 
 addEventListener( 'keydown', e => {
@@ -530,13 +557,15 @@ let dilation = 0;
 
 const FIXED = 1 / 60;
 
-// Dilation on the wheel — a continuous dial rather than a state (§45.7), and the
+// Dilation on alt+wheel — a continuous dial rather than a state (§45.7), and the
 // cheapest possible test of §10.8's claim that large object counts are
 // affordable *because* the fight is slow. Watch the contact count and frame time
-// as you wind it in.
+// as you wind it in. The modifier is the §51.7 shortfall arriving on schedule:
+// the bare wheel now selects which material fires, because that is the one the
+// player touches every few seconds.
 addEventListener( 'wheel', e => {
 
-	if ( ! input.locked ) return;
+	if ( ! input.locked || ! e.altKey ) return;
 	dilation = Math.max( 0, Math.min( 0.96, dilation - e.deltaY * 0.0006 ) );
 	e.preventDefault();
 
@@ -562,7 +591,7 @@ function frame() {
 
 	const state = input.sample();
 	state.probe = input.pressed( 'probe' );
-	state.releaseOrbit = input.pressed( 'releaseOrbit' );
+	state.vent = input.pressed( 'vent' );
 	if ( input.pressed( 'reset' ) ) flight.reset();
 	if ( input.pressed( 'copyTuning' ) ) copyTuning();
 
@@ -594,7 +623,7 @@ function frame() {
 
 	if ( accumulator > FIXED * 3 ) accumulator = 0;
 
-	telekinesis.update( state, Math.max( dt, 1e-4 ), destruction );
+	accretion.update( state, Math.max( dt, 1e-4 ), destruction );
 	destruction.update( dt, flight );
 	debris.update( dt );
 	dust.update( dt, flight.viewPosition, flight.velocity );
@@ -602,13 +631,13 @@ function frame() {
 	rig.uniforms.uTime.value = elapsed;
 	rig.update( dt, flight.viewPosition );
 
-	audio.setLoad( Math.min( 1, telekinesis.watts / TK.wattScale ) );
+	audio.setLoad( Math.min( 1, accretion.watts / ACC.wattScale ) );
 	flight.lastImpact *= 0.6;
 
 	camera.position.copy( flight.viewPosition );
 	camera.quaternion.copy( flight.viewQuaternion );
 
-	post.update( dt, elapsed, { watts: telekinesis.watts, heat: telekinesis.heat, dilation } );
+	post.update( dt, elapsed, { watts: accretion.watts, heat: accretion.heat, dilation } );
 	post.render( dt );
 
 	hud.update( dt, {
@@ -618,8 +647,8 @@ function frame() {
 		asleep: solver.stats.asleep,
 		contacts: solver.stats.contacts,
 		substeps: solver.stats.substeps,
-		watts: telekinesis.watts,
-		wattScale: TK.wattScale,
+		watts: accretion.watts,
+		wattScale: ACC.wattScale,
 		panels: panels.map( p => ( {
 			state: PANEL_STATE_NAME[ p.state ],
 			active: p.activated,
@@ -631,12 +660,18 @@ function frame() {
 		} ) ),
 		dust: dust.live,
 		suspended: dust.suspended,
-		held: telekinesis.held.length,
-		load: telekinesis.load,
+		pool: accretion.pool,
+		poolMass: accretion.mass,
+		capacity: ACC.capacity,
+		selected: accretion.selected,
+		materialNames: MATERIAL_NAME,
+		inFunnel: accretion.inFunnel,
+		consumed: accretion.consumed,
+		stalled: accretion.stalled,
 		speed: flight.velocity.length(),
 		light: rig.remaining(),
 		dilation,
-		probe: telekinesis.probeInfo
+		probe: accretion.probeInfo
 	} );
 
 }
@@ -653,5 +688,5 @@ addEventListener( 'resize', () => {
 frame();
 
 // Exposed for console poking during tuning.
-window.APPARITION = { solver, rig, flight, telekinesis, destruction, debris, dust, panels, quality, post,
-	TUNING, TK, POST, copyTuning, readTuning, formatTuning };
+window.APPARITION = { solver, rig, flight, accretion, destruction, debris, dust, panels, quality, post,
+	TUNING, ACC, POST, copyTuning, readTuning, formatTuning };
