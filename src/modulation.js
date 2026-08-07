@@ -106,6 +106,14 @@ export class ModMatrix {
 		this.surfaces = [];
 		this.enabled = true;
 
+		// Parameters taken back by hand. A surface is absolute — it replaces the
+		// base rather than adding to it — so a parameter a surface owns is one the
+		// slider cannot reach, and dialling a new look at a place the surface
+		// already covers is dialling blind. Touching the slider holds that one
+		// parameter until it is released, which is what makes dial-fly-capture work
+		// at a place that already has presets on it.
+		this.held = new Set();
+
 		// Whatever the sliders say, captured fresh each frame *before* anything is
 		// written. Routes add to this rather than to last frame's result, or every
 		// route would integrate itself into a runaway over a few seconds.
@@ -134,6 +142,27 @@ export class ModMatrix {
 		return this;
 
 	}
+
+	// Which surface, if any, is currently speaking for this parameter. One
+	// definition of "a surface is live here", used by the frame loop, the readout
+	// and the panel, because three copies of it would drift.
+	surfaceOwning( path ) {
+
+		for ( const ms of this.surfaces ) {
+
+			if ( ! ms.enabled || ms.presets.length === 0 || ms.blend <= 0 ) continue;
+			if ( ms.keys.indexOf( path ) >= 0 ) return ms;
+
+		}
+
+		return null;
+
+	}
+
+	// Take a parameter back from whatever surface owns it, or give it back.
+	hold( path ) { this.held.add( path ); return this; }
+	release( path ) { this.held.delete( path ); return this; }
+	releaseAll() { this.held.clear(); }
 
 	// from: source name. to: 'NAMESPACE.key'. amount is in the destination's own
 	// units, so a route to `kaleid` of 8 means "up to eight extra sides".
@@ -180,6 +209,11 @@ export class ModMatrix {
 			for ( const k of ms.keys ) this._touched.add( k );
 
 		}
+
+		// A held parameter has to stay claimed even after the surface that provoked
+		// the hold is switched off, or letting go of it would leave the slider's
+		// value stranded wherever the surface last put it.
+		for ( const path of this.held ) this._touched.add( path );
 
 		for ( const path of this._touched ) {
 
@@ -264,6 +298,13 @@ export class ModMatrix {
 		const readBase = k => this._base.get( k ) || 0;
 		for ( const ms of this.surfaces ) ms.evaluate( state.x, state.y, state.z, acc, readBase );
 
+		// Held parameters go straight back to the slider. Between the surfaces and
+		// the routes on purpose: a hold takes the parameter back from the *place*,
+		// not from the patch, so a route still leans it afterwards. Holding is how
+		// you dial at a spot the surface already describes; the routes are a
+		// separate argument with their own on switches.
+		for ( const path of this.held ) if ( acc.has( path ) ) acc.set( path, this._base.get( path ) || 0 );
+
 		// Routes: additive, and every one of them recorded by name. Keeping the
 		// contribution rather than only the sum is the difference between a
 		// runaway you can point at and one you can only watch.
@@ -308,21 +349,17 @@ export class ModMatrix {
 			.map( r => ( { from: r.from, curve: r.curve, amount: r.amount, value: r.contribution } ) )
 			.sort( ( a, b ) => Math.abs( b.value ) - Math.abs( a.value ) );
 
-		// Only a surface that is actually speaking. Reporting one that merely owns
-		// the key would put the word "absolute" next to every parameter of an empty
-		// surface, which is the readout telling you something is writing when the
-		// thing that would write it has nothing to say.
-		let surface = null;
+		// Only a surface that is actually speaking, and only if the panel has not
+		// taken this parameter back — a readout that says a surface owns something
+		// while a slider is driving it is the same class of lie as showing a sum
+		// without its terms.
+		const held = this.held.has( path );
+		const owner = this.surfaceOwning( path );
 
-		for ( const ms of this.surfaces ) {
-
-			if ( ! ms.enabled || ms.presets.length === 0 || ms.blend <= 0 ) continue;
-			if ( ms.keys.indexOf( path ) >= 0 ) surface = ms.name;
-
-		}
-
-		return { path, base, surface, contributions,
-			total: t ? t.obj[ t.key ] : base };
+		return { path, base, held,
+			surface: held ? null : owner && owner.name,
+			heldFrom: held && owner ? owner.name : null,
+			contributions, total: t ? t.obj[ t.key ] : base };
 
 	}
 

@@ -570,6 +570,7 @@ gui.domElement.style.zIndex = 30;
 // about it.
 
 const gParam = {};
+const paramCtrl = new Map();
 
 for ( const name of FOLDERS ) {
 
@@ -586,8 +587,48 @@ for ( const name of FOLDERS ) {
 		// restored underneath and the slider appears to spring back. The dragged
 		// value is passed rather than re-read, so a route that is up at the time
 		// does not get folded into it.
-		f.add( t.obj, t.key, q.min, q.max, q.step ).name( q.label )
-			.onChange( v => mod.setBase( q.path, v ) );
+		//
+		// And if a surface is speaking for this parameter where you are standing,
+		// touching the slider takes it back — otherwise the drag is invisible and
+		// you are dialling a number the surface overwrites on the same frame.
+		// Nothing is held until a surface actually owns it, so with no presets
+		// placed this never fires and the held list stays empty.
+		paramCtrl.set( q.path, f.add( t.obj, t.key, q.min, q.max, q.step ).name( q.label )
+			.onChange( v => {
+
+				mod.setBase( q.path, v );
+				if ( mod.surfaceOwning( q.path ) ) { mod.hold( q.path ); rebuildHeldGui(); }
+
+			} ) );
+
+	}
+
+}
+
+// A slider shows the base — what you last dialled — and not the composite. That
+// is deliberate: a controller that follows the live value cannot be dragged,
+// because the modulation moves the handle out from under the pointer on the next
+// frame. The consequence is that a surface can be speaking for a parameter while
+// its slider sits there looking authoritative, so the name says whose it is.
+//
+// Only the label changes, and only when the answer changes — the number stays
+// the base, so the drag still works and the readout is still the place to see
+// what actually landed.
+const _owned = new Map();
+
+function markOwnership() {
+
+	for ( const [ path, ctrl ] of paramCtrl ) {
+
+		const owner = mod.surfaceOwning( path );
+		const state = ! owner ? '' : mod.held.has( path ) ? 'held' : owner.name;
+		if ( _owned.get( path ) === state ) continue;
+
+		_owned.set( path, state );
+		const q = BY_PATH.get( path );
+		ctrl.name( state === '' ? q.label
+			: state === 'held' ? `${q.label}  [held]`
+			: `${q.label}  [${state} surface]` );
 
 	}
 
@@ -695,7 +736,7 @@ function drawReadout() {
 
 		e._warn = warnLevel( e.path );
 		e._hot = e._warn !== null && e.total > e._warn;
-		e._moved = Math.abs( e.total - e.base ) > 1e-9 || !! e.surface;
+		e._moved = Math.abs( e.total - e.base ) > 1e-9 || !! e.surface || e.held;
 
 	} );
 
@@ -720,6 +761,10 @@ function drawReadout() {
 		// the difference between "this is not what the slider says" and "this is
 		// not what the slider says, and here is what owns it".
 		if ( e.surface ) block.push( `  ${pad( `surface ${e.surface}`, 20 )} <i>absolute, replaces base</i>` );
+		// The other direction: the slider has taken this one off the surface, so the
+		// base above is what you dialled and the place has no say in it.
+		if ( e.held ) block.push( `  ${pad( 'held by the slider', 20 )} <i>${
+			e.heldFrom ? `${e.heldFrom} overridden` : 'no surface here'}</i>` );
 
 		for ( const c of e.contributions ) {
 
@@ -848,6 +893,44 @@ function addRouteGui( r ) {
 for ( const r of mod.routes ) addRouteGui( r );
 
 // --- metasurfaces on the panel ----------------------------------------------
+
+// What the sliders have taken back. A surface is absolute, so this is the only
+// way the panel can say anything at a place a surface already describes — and it
+// has to be visible and reversible, because a parameter silently detached from
+// the level by a stray drag two folders ago is exactly the kind of invisible
+// state this whole rebuild exists to get rid of.
+const gHeld = gMod.addFolder( 'held from the surfaces' );
+let _heldCtrls = [];
+
+function rebuildHeldGui() {
+
+	for ( const c of _heldCtrls ) c.destroy();
+	_heldCtrls = [];
+
+	const held = [ ...mod.held ].sort();
+
+	if ( ! held.length ) {
+
+		_heldCtrls.push( gHeld.add( { info: 'nothing — the surfaces have it all' }, 'info' )
+			.name( ' ' ).disable() );
+		return;
+
+	}
+
+	for ( const path of held ) {
+
+		const row = { release() { mod.release( path ); rebuildHeldGui(); } };
+		_heldCtrls.push( gHeld.add( row, 'release' ).name( `give back  ${path}` ) );
+
+	}
+
+	_heldCtrls.push( gHeld.add( { all() { mod.releaseAll(); rebuildHeldGui(); } }, 'all' )
+		.name( `give back all ${held.length}` ) );
+
+}
+
+rebuildHeldGui();
+gHeld.close();
 
 const gSurf = gMod.addFolder( 'metasurfaces' );
 gSurf.add( editor, 'surface', surfaces.map( s => s.name ) ).name( 'editing' );
@@ -1330,10 +1413,17 @@ function frame() {
 	// Throttled. The breakdown itself is free — the matrix keeps last frame's
 	// contributions by name — but rebuilding a few hundred lines of DOM sixty
 	// times a second would make the instrument the thing worth measuring.
-	if ( readout.show ) {
+	//
+	// Ownership marking runs on the same clock but regardless of whether the
+	// readout is open, because the moment it exists to explain — dragging a slider
+	// and watching nothing happen — is exactly the moment the readout is shut.
+	readoutClock += dt;
 
-		readoutClock += dt;
-		if ( readoutClock >= 1 / readout.rate ) { readoutClock = 0; drawReadout(); }
+	if ( readoutClock >= 1 / readout.rate ) {
+
+		readoutClock = 0;
+		markOwnership();
+		if ( readout.show ) drawReadout();
 
 	}
 
