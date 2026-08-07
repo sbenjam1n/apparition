@@ -27,6 +27,32 @@
 //     of space carries parameter *offsets* and a feather distance, so flying into
 //     one cross-fades rather than switching, and several overlapping zones sum.
 //
+// Above the routes sit *scenes*, and the right prior art for those is not a VJ
+// bank but a lighting desk cue: a named set of levels with a fade-in time, a
+// fade-out time, and a condition that fires it. That is exactly the shape asked
+// for — hold fire near a particular place and saturation climbs over a ramp,
+// stop and it returns to the resting look over a different, longer ramp. Two
+// ramps rather than one is the whole point; a swell that decays at the speed it
+// arrived reads as a switch.
+//
+// The layering, in order, because the order is what makes it behave:
+//
+//   base      whatever the sliders say, re-read every frame
+//   scenes    blended *toward* — absolute targets, weighted by each cue's ramp
+//   zones     added — spatial offsets, feathered, and they sum
+//   routes    added — source x amount, optionally gated by a zone's weight
+//
+// Scenes are absolute and blend; zones and routes are relative and add. That
+// distinction is the one that keeps it predictable: a cue says "here is the look",
+// a zone and a route say "and lean it this way".
+//
+// Cross-modulation between areas falls out of one line — every zone is also
+// published as a source named `zone:<name>`, so a route can be scaled by where
+// you are, and a route in one region can be driven by your distance into
+// another. "Speed drives kaleid, but only among the piers" is a route with a
+// `via`; "the pool bleeds into the corridor" is a route from one zone's weight to
+// a parameter another zone owns.
+//
 // Nothing here knows what hydra is. It reads numbers out of the world and writes
 // numbers into registered objects, which is why it can drive the scan and the
 // post grade with the same routes that drive the feedback loop.
@@ -82,6 +108,101 @@ export class Source {
 
 }
 
+// Trigger helpers. A trigger returns 0..1 rather than a boolean, so a cue can
+// come up part-way — which is what makes "near a certain location" a gradient
+// instead of a tripwire.
+export const WHEN = {
+
+	// A named state flag or number, clamped.
+	state: key => st => {
+
+		const v = st[ key ];
+		return v === true ? 1 : v === false || v == null ? 0 : Math.max( 0, Math.min( 1, v ) );
+
+	},
+
+	above: ( key, threshold, soft = 0.1 ) => st => {
+
+		const v = st[ key ] || 0;
+		return Math.max( 0, Math.min( 1, ( v - threshold ) / Math.max( 1e-4, soft ) ) );
+
+	},
+
+	// How far inside a zone you are, which the matrix publishes as a source.
+	near: name => st => st[ `zone:${name}` ] || 0,
+
+	// Multiplicative, so a cue that needs two conditions comes up only as far as
+	// the weaker of them. `fire near the pool` should be at half strength when you
+	// are half-way into the pool, not on.
+	all: ( ...fns ) => st => fns.reduce( ( a, f ) => a * f( st ), 1 ),
+	any: ( ...fns ) => st => fns.reduce( ( a, f ) => Math.max( a, f( st ) ), 0 ),
+	not: fn => st => 1 - fn( st )
+
+};
+
+// A cue. `set` is absolute — the values the look moves *to* — and `enter` and
+// `exit` are the seconds it takes to get there and back.
+class Scene {
+
+	constructor( name, { when, set = {}, enter = 1.0, exit = 2.0, hold = 0, priority = 0 } ) {
+
+		this.name = name;
+		this.when = when;
+		this.set = set;
+		this.enter = enter;
+		this.exit = exit;
+		// Minimum time up once fired. A trigger that is true for one frame — a hit,
+		// a shot — would otherwise produce a ramp that reverses before it arrives.
+		this.hold = hold;
+		this.priority = priority;
+		this.on = true;
+		this.weight = 0;
+		this.target = 0;
+		this._held = 0;
+		this._peak = 0;
+
+	}
+
+	update( state, dt ) {
+
+		if ( ! this.on ) { this.weight = 0; this.target = 0; return 0; }
+
+		this.target = Math.max( 0, Math.min( 1, this.when( state ) ) );
+
+		// Hold latches the *level the trigger asked for*, not the level reached so
+		// far. Holding the current weight instead merely freezes the ramp where it
+		// happened to be when the trigger let go — an eight-metre-per-second hit
+		// stalled at 24% instead of arriving, which looked like a working cue and
+		// was not one.
+		if ( this.target > this._peak || this.target > this.weight ) {
+
+			this._held = this.hold;
+			this._peak = Math.max( this._peak, this.target );
+
+		} else if ( this._held > 0 ) {
+
+			this._held -= dt;
+			if ( this._held <= 0 ) this._peak = 0;
+
+		}
+
+		const goal = this._held > 0 ? Math.max( this.target, this._peak ) : this.target;
+		const rising = goal > this.weight;
+		const tau = rising ? this.enter : this.exit;
+
+		// Exponential rather than linear. A linear fade arrives with a corner on
+		// it, and on a parameter that is already being modulated the corner reads
+		// as a glitch rather than as a transition.
+		const k = tau > 1e-4 ? 1 - Math.exp( - dt / tau ) : 1;
+		this.weight += ( goal - this.weight ) * k;
+		if ( this.weight < 1e-4 ) this.weight = 0;
+
+		return this.weight;
+
+	}
+
+}
+
 export class ModMatrix {
 
 	// `targets` maps a namespace to the object holding those numbers, e.g.
@@ -92,6 +213,7 @@ export class ModMatrix {
 		this.sources = new Map();
 		this.routes = [];
 		this.zones = [];
+		this.scenes = [];
 		this.enabled = true;
 
 		// Whatever the sliders say, captured fresh each frame *before* anything is
@@ -111,9 +233,22 @@ export class ModMatrix {
 
 	// from: source name. to: 'NAMESPACE.key'. amount is in the destination's own
 	// units, so a route to `kaleid` of 8 means "up to eight extra sides".
-	route( from, to, amount, curve = 'linear' ) {
+	//
+	// `via` names a zone whose weight scales the whole route, which is how a patch
+	// becomes local: the same source drives a different parameter, or none, in a
+	// different part of the building.
+	route( from, to, amount, curve = 'linear', via = null ) {
 
-		this.routes.push( { from, to, amount, curve, on: true } );
+		this.routes.push( { from, to, amount, curve, via, on: true } );
+		return this;
+
+	}
+
+	// A cue: absolute levels, a fade in, a fade out, and a condition.
+	scene( name, spec ) {
+
+		this.scenes.push( new Scene( name, spec ) );
+		this.scenes.sort( ( a, b ) => a.priority - b.priority );
 		return this;
 
 	}
@@ -146,6 +281,7 @@ export class ModMatrix {
 
 		for ( const r of this.routes ) this._touched.add( r.to );
 		for ( const z of this.zones ) for ( const k in z.set ) this._touched.add( k );
+		for ( const sc of this.scenes ) for ( const k in sc.set ) this._touched.add( k );
 
 		for ( const path of this._touched ) {
 
@@ -171,16 +307,11 @@ export class ModMatrix {
 
 		this._capture();
 
-		for ( const s of this.sources.values() ) s.update( state, dt );
-
-		// Start from the dialled value for every destination in play.
-		const acc = new Map();
-		for ( const path of this._touched ) acc.set( path, this._base.get( path ) || 0 );
-
-		// Zones first: they set the local ground that routes then modulate around.
+		// Zone weights first, and publish them onto the state, because both the
+		// scene triggers and the routes want to ask where you are.
 		for ( const z of this.zones ) {
 
-			if ( ! z.on ) { z.weight = 0; continue; }
+			if ( ! z.on ) { z.weight = 0; state[ `zone:${z.name}` ] = 0; continue; }
 
 			const d = Math.hypot( state.x - z.x, state.y - z.y, state.z - z.z );
 			const w = d <= z.radius ? 1
@@ -190,8 +321,36 @@ export class ModMatrix {
 			// Smoothstep, so a boundary crossing eases rather than ramping
 			// linearly into a corner.
 			z.weight = w * w * ( 3 - 2 * w );
-			if ( z.weight <= 0 ) continue;
+			state[ `zone:${z.name}` ] = z.weight;
 
+		}
+
+		for ( const s of this.sources.values() ) s.update( state, dt );
+		for ( const sc of this.scenes ) sc.update( state, dt );
+
+		// Start from the dialled value for every destination in play.
+		const acc = new Map();
+		for ( const path of this._touched ) acc.set( path, this._base.get( path ) || 0 );
+
+		// Scenes: blended *toward*, in priority order. Absolute, because a cue's
+		// job is to say what the look is rather than to lean on it.
+		for ( const sc of this.scenes ) {
+
+			if ( sc.weight <= 0 ) continue;
+			for ( const k in sc.set ) {
+
+				const from = acc.has( k ) ? acc.get( k ) : ( this._base.get( k ) || 0 );
+				acc.set( k, from + ( sc.set[ k ] - from ) * sc.weight );
+
+			}
+
+		}
+
+		// Zones: added on top of whatever cue is up, so a region still colours a
+		// scene rather than being overruled by it.
+		for ( const z of this.zones ) {
+
+			if ( z.weight <= 0 ) continue;
 			for ( const k in z.set ) acc.set( k, ( acc.get( k ) || 0 ) + z.set[ k ] * z.weight );
 
 		}
@@ -201,8 +360,19 @@ export class ModMatrix {
 			if ( ! r.on ) continue;
 			const src = this.sources.get( r.from );
 			if ( ! src ) continue;
+
+			// `via` makes the patch local — the route only exists where you are.
+			let gate = 1;
+			if ( r.via ) {
+
+				const z = this.zones.find( q => q.name === r.via );
+				gate = z ? z.weight : 0;
+
+			}
+
+			if ( gate <= 0 ) continue;
 			const shaped = ( CURVES[ r.curve ] || CURVES.linear )( src.value );
-			acc.set( r.to, ( acc.get( r.to ) || 0 ) + shaped * r.amount );
+			acc.set( r.to, ( acc.get( r.to ) || 0 ) + shaped * r.amount * gate );
 
 		}
 
@@ -227,6 +397,28 @@ export class ModMatrix {
 	activeZones() {
 
 		return this.zones.filter( z => z.weight > 0.01 );
+
+	}
+
+	activeScenes( threshold = 0.01 ) {
+
+		return this.scenes.filter( s => s.weight > threshold )
+			.sort( ( a, b ) => b.weight - a.weight );
+
+	}
+
+	// Snapshot the current look as a cue, which is how a scene gets authored:
+	// dial it on the panel, then take it.
+	capture( name, keys, spec = {} ) {
+
+		const set = {};
+		for ( const k of keys ) {
+
+			const t = this._resolve( k );
+			if ( t ) set[ k ] = t.obj[ t.key ];
+
+		}
+		return this.scene( name, Object.assign( { when: () => 0, set }, spec ) );
 
 	}
 

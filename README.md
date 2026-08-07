@@ -233,6 +233,48 @@ on it clicks where separate rise and fall times make it swell and decay. And
 parameter *offsets* and a feather distance, so crossing a boundary cross-fades,
 and overlapping zones sum into somewhere neither describes alone.
 
+**Cues** (`modulation.js`) — above the routes sit scenes, and the right prior art
+is a lighting desk cue rather than a VJ bank: a named set of *absolute* levels, a
+fade-in time, a fade-out time, and a condition that fires it. **Two ramps rather
+than one is the whole point** — a swell that decays at the speed it arrived reads
+as a switch, and all the interesting behaviour is in the asymmetry between how
+fast something arrives and how long it takes to let go.
+
+Triggers return 0..1 rather than true/false, and `all` is multiplicative, so
+"channelling near the pool" comes up *half way* when you are half way into the
+pool. A cue is a gradient in two dimensions at once — how true its condition is,
+and how far along its ramp it has got.
+
+Measured on `channelling in the pool` (1.5 s in, 3.4 s out):
+
+| | 0 s | 1 s | 2 s | 3.5 s |
+|---|---|---|---|---|
+| holding fire | sat 1.31, kaleid 0.1 | 1.79 / 3.9 | 2.04 / 5.9 | 2.20 / 7.2 |
+| released | sat 2.23, kaleid 7.4 | 2.08 / 6.2 | 1.88 / 4.6 | 1.67 / 3.0 |
+
+`hold` is what makes a one-frame trigger usable: an impact is true for a single
+frame, and without a latch the ramp reverses before it has arrived. With it, a
+hit takes `invert` to 0.93 in a third of a second and spends two more seconds
+coming back.
+
+The layering, in order, because the order is what makes it predictable:
+
+```
+base     the sliders, re-read every frame
+scenes   blended toward — absolute, weighted by each cue's ramp
+zones    added — spatial offsets, feathered, and they sum
+routes   added — source × amount, optionally gated by a zone
+```
+
+Scenes are absolute and blend; zones and routes are relative and add. A cue says
+*here is the look*; a zone and a route say *and lean it this way*.
+
+Cross-modulation between areas falls out of one line: every zone publishes its
+weight as a source named `zone:<name>`, and a route takes an optional `via`. So
+"speed drives kaleid, but only among the piers" is a patch (measured: kaleid 1.3
+elsewhere, 8.8 at the piers), and one region driving a parameter another region
+owns is a route from one zone's weight.
+
 **Shards** (`shred.js`) — the ammunition is not rigid bodies. It cannot be: the
 solver caps at 640 with a contact graph behind each one, so "more debris" bought
 more cost and never bought the feeling of something being torn apart. Eight

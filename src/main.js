@@ -31,7 +31,7 @@ import { ShredField, SHRED } from './shred.js';
 import { ScanField, SCAN } from './scan.js';
 import { PostStack, POST } from './fx.js';
 import { HYDRA } from './hydra.js';
-import { ModMatrix, CURVES } from './modulation.js';
+import { ModMatrix, CURVES, WHEN } from './modulation.js';
 import { ImpactAudio } from './audio.js';
 import { Hud } from './hud.js';
 
@@ -195,6 +195,101 @@ mod
 		'HYDRA.thresh': 0.22, 'HYDRA.invert': 0.5, 'HYDRA.saturate': - 0.5,
 		'SCAN.sparkle': 0.4
 	} } );
+
+// --- cues -------------------------------------------------------------------
+//
+// A scene here has a lighting desk's semantics rather than a VJ bank's: absolute
+// levels, a fade-in time, a fade-out time, and a condition that fires it. Two
+// ramps rather than one is the whole point — a swell that decays at the speed it
+// arrived reads as a switch, and the interesting behaviour is all in the
+// asymmetry between how fast something arrives and how long it takes to let go.
+//
+// Triggers return 0..1 rather than true/false, and `all` is multiplicative, so
+// "firing near the pool" comes up half-way when you are half-way into the pool.
+// A cue is a gradient in two dimensions at once: how true its condition is, and
+// how far along its ramp it has got.
+
+mod
+	// The one asked for, more or less verbatim: hold the trigger anywhere near
+	// the water and the frame swells over a second and a half, then takes twice
+	// as long to let go of it.
+	.scene( 'channelling in the pool', {
+		when: WHEN.all( WHEN.state( 'channelling' ), WHEN.near( 'the pool' ) ),
+		enter: 1.5, exit: 3.4, hold: 0.4,
+		set: {
+			'HYDRA.saturate': 2.3,
+			'HYDRA.colorama': 0.075,
+			'HYDRA.kaleid': 8,
+			'HYDRA.feedback': 0.86,
+			'HYDRA.modRotateAmount': 0.16
+		}
+	} )
+
+	// Full and still carrying it. Slow in, very slow out — the look of being
+	// loaded should outlast the moment you stopped eating.
+	.scene( 'overloaded', {
+		when: WHEN.above( 'saturation', 0.8, 0.2 ),
+		enter: 2.6, exit: 6.0,
+		set: {
+			'HYDRA.selfModulate': 1.6,
+			'HYDRA.modAmount': 0.011,
+			'HYDRA.gain': 1.01,
+			'SCAN.glow': 1.9
+		}
+	} )
+
+	// A hit. One frame of trigger, held for a beat so the ramp can arrive at all,
+	// then a long release. This is the cue that most needs `hold` — without it the
+	// condition is false again before the fade is a tenth of the way up.
+	.scene( 'struck', {
+		when: WHEN.above( 'impact', 3.0, 2.0 ),
+		enter: 0.06, exit: 2.2, hold: 0.35, priority: 10,
+		set: {
+			'HYDRA.invert': 0.75,
+			'HYDRA.chromaSplit': 0.006,
+			'HYDRA.thresh': 0.30,
+			'HYDRA.rotate': - 0.09
+		}
+	} )
+
+	// Standing in ground you have destroyed, deep enough that it is not incidental.
+	// §48's failing-resolution register, fired by the only thing that should fire it.
+	.scene( 'in the ruin', {
+		when: WHEN.above( 'ruin', 0.55, 0.25 ),
+		enter: 1.8, exit: 4.5,
+		set: {
+			'HYDRA.pixelate': 220,
+			'HYDRA.posterize': 5,
+			'HYDRA.saturate': 0.45,
+			'HYDRA.colorama': 0.0,
+			'SCAN.sparkle': 0.8
+		}
+	} )
+
+	// Behind the partition, in the dark, with nothing in the disc. The resting
+	// look of the place you have not touched yet.
+	.scene( 'unlit and empty', {
+		when: WHEN.all( WHEN.near( 'behind the partition' ), WHEN.not( WHEN.above( 'saturation', 0.05, 0.1 ) ) ),
+		enter: 2.2, exit: 3.0,
+		set: {
+			'HYDRA.feedback': 0.44,
+			'HYDRA.thresh': 0.34,
+			'HYDRA.saturate': 0.6,
+			'SCAN.lit': 0.06,
+			'SCAN.glow': 1.9
+		}
+	} );
+
+// Cross-modulation. `via` makes a patch local — the same source drives a
+// different parameter, or none at all, depending on where you are — and because
+// every zone publishes its weight as a source, one region can drive a parameter
+// another region owns.
+mod
+	.route( 'speed', 'HYDRA.kaleid', 5, 'square', 'the piers' )
+	.route( 'impact', 'HYDRA.repeatY', 6, 'root', 'the piers' )
+	.addSource( 'poolDepth', st => st[ 'zone:the pool' ] || 0, { attack: 0.9, release: 1.8 } )
+	.route( 'poolDepth', 'HYDRA.fieldMix', 0.45 )
+	.route( 'poolDepth', 'SCAN.rampCeil', - 3.0 );
 
 // The panel and the patch bay write the same numbers, so a drag has to become
 // the new ground rather than being stamped over by the old one.
@@ -582,6 +677,19 @@ gMod.add( mod, 'enabled' ).name( 'modulation on' );
 // the drag keeps being restored underneath and the slider appears to snap back.
 gMod.add( { rebase() { mod.rebase(); } }, 'rebase' ).name( 'take sliders as base' );
 
+const gScenes = gMod.addFolder( 'scenes (cues)' );
+for ( const sc of mod.scenes ) {
+
+	const f = gScenes.addFolder( sc.name );
+	f.add( sc, 'on' ).name( 'armed' );
+	f.add( sc, 'enter', 0.02, 10, 0.02 ).name( 'fade in (s)' );
+	f.add( sc, 'exit', 0.02, 20, 0.05 ).name( 'fade out (s)' );
+	f.add( sc, 'hold', 0, 4, 0.05 ).name( 'hold (s)' );
+	f.add( sc, 'weight', 0, 1 ).name( 'level' ).listen().disable();
+	f.close();
+
+}
+
 const gRoutes = gMod.addFolder( 'routes' );
 for ( const r of mod.routes ) {
 
@@ -589,6 +697,7 @@ for ( const r of mod.routes ) {
 	f.add( r, 'on' ).name( 'on' );
 	f.add( r, 'amount', - Math.abs( r.amount ) * 4 - 0.001, Math.abs( r.amount ) * 4 + 0.001 ).name( 'amount' );
 	f.add( r, 'curve', Object.keys( CURVES ) ).name( 'curve' );
+	f.add( { via: r.via || '(everywhere)' }, 'via' ).name( 'only in' ).disable();
 	f.close();
 
 }
@@ -1065,6 +1174,7 @@ function frame() {
 		consumed: accretion.consumed,
 		stalled: accretion.stalled,
 		mods: mod.enabled ? mod.active( 0.04 ).slice( 0, 4 ).map( m => `${m.name} ${( m.value * 100 ).toFixed( 0 )}` ) : [],
+		cues: mod.activeScenes( 0.02 ).map( c => `${c.name} ${( c.weight * 100 ).toFixed( 0 )}` ),
 		zone: mod.activeZones().map( z => z.name ).join( ' + ' ),
 		scanMode: VIEW.mode,
 		scanPoints: scan.drawn,
