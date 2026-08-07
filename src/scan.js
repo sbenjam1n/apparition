@@ -52,7 +52,10 @@ export const SCAN = {
 	rowGap: 0.17,            // metres between scan rows
 	dotGap: 0.062,           // metres between samples along a row
 	jitter: 0.35,            // fraction of spacing; kills the moire, keeps the rows
-	budget: 300000,          // hard cap; spacing is relaxed until the set fits
+	// Trimmed from 300k. Per-vertex lighting moved the cost from fragments to
+	// points, which means point count is now the whole budget — and the target is
+	// a 2019 integrated part, not this machine.
+	budget: 170000,          // hard cap; spacing is relaxed until the set fits
 	// Fraction of the set actually drawn. Points are shuffled at build time, so a
 	// prefix of the buffer is a uniform random subset of the room and the LOD is a
 	// single drawRange call — no rebuild, no popping, no spatial bias.
@@ -128,12 +131,27 @@ export class ScanField {
 			uPixelRatio: { value: 1 }
 		} );
 
+		// Lit per *point*, not per fragment, and that is the difference between
+		// this running and not running.
+		//
+		// A quarter of a million sprites at up to five pixels is roughly six
+		// million fragments — with `transparent: true` there is no early-z, so
+		// every one of them ran the full rig: eight tube lights, six practicals,
+		// the caustic field and a three-tap volumetric raymarch. On a 2019
+		// integrated part that is not a slow frame, it is a stopped one, and a
+		// stopped frame reads to the player as the controls not responding.
+		//
+		// A point is at most a few pixels across, so per-vertex and per-fragment
+		// lighting are visually identical here. Moving the whole rig up a stage
+		// turns six million shading invocations into two hundred and thirty
+		// thousand, and dropping `transparent` puts the cloud back in the opaque
+		// pass where early-z can reject it.
 		this.material = new THREE.ShaderMaterial( {
 			uniforms: this.uniforms,
-			transparent: true,
+			transparent: false,
 			depthWrite: true,
 			blending: THREE.NormalBlending,
-			vertexShader: /* glsl */`
+			vertexShader: '#define LIGHT_NO_DERIVATIVES\n' + LIGHT_GLSL + /* glsl */`
 				attribute vec3 aNormal;
 				attribute float aDamage;
 				attribute float aSeed;
@@ -144,19 +162,21 @@ export class ScanField {
 				uniform float uMaxPixels;
 				uniform float uLoosen;
 				uniform float uPixelRatio;
-				uniform float uTime;
+				uniform vec3 uRampLow;
+				uniform vec3 uRampMid;
+				uniform vec3 uRampHigh;
+				uniform float uRampFloor;
+				uniform float uRampCeil;
+				uniform float uLit;
+				uniform float uSparkle;
+				uniform float uGlow;
+				uniform float uFogMix;
 				uniform vec3 uCamPos;
 
-				varying vec3 vWorld;
-				varying vec3 vNrm;
-				varying float vDamage;
-				varying float vSeed;
+				varying vec3 vColor;
+				varying float vAlpha;
 
 				void main() {
-					vDamage = aDamage;
-					vSeed = aSeed;
-					vNrm = aNormal;
-
 					vec3 p = position;
 
 					// Damaged points drift before they vanish, so a surface visibly
@@ -172,43 +192,12 @@ export class ScanField {
 						p.z += sin( t * 0.87 + aSeed * 63.0 ) * d * uLoosen;
 					}
 
-					vWorld = p;
-
-					vec4 mv = viewMatrix * vec4( p, 1.0 );
-					float dist = max( - mv.z, 0.05 );
-
-					// Between constant-world-size (which vanishes at range) and
-					// constant-pixel-size (which turns distance into a wall of dots).
-					float px = uPointSize * uPixelRatio / pow( dist, uSizeFalloff );
-					gl_PointSize = clamp( px, uMinPixels * uPixelRatio, uMaxPixels * uPixelRatio );
-					gl_Position = projectionMatrix * mv;
-				}
-			`,
-			fragmentShader: LIGHT_GLSL + /* glsl */`
-				uniform vec3 uRampLow;
-				uniform vec3 uRampMid;
-				uniform vec3 uRampHigh;
-				uniform float uRampFloor;
-				uniform float uRampCeil;
-				uniform float uLit;
-				uniform float uSparkle;
-				uniform float uGlow;
-				uniform float uFogMix;
-				uniform vec3 uCamPos;
-
-				varying vec3 vWorld;
-				varying vec3 vNrm;
-				varying float vDamage;
-				varying float vSeed;
-
-				void main() {
-					// Round points. Square ones read as pixels and give the whole
-					// thing away as a rasteriser rather than a return.
-					vec2 q = gl_PointCoord * 2.0 - 1.0;
-					float r2 = dot( q, q );
-					if ( r2 > 1.0 ) discard;
-
-					float h = clamp( ( vWorld.y - uRampFloor ) / max( 0.001, uRampCeil - uRampFloor ), 0.0, 1.0 );
+					// The LIDAR ramp: cold and dense at the floor, hot at the ceiling.
+					// It is a convention rather than a lighting model and that is
+					// exactly why it earns its place — height reads instantly and
+					// unambiguously, which is what a 6DOF room most needs and what a
+					// point cloud is otherwise worst at.
+					float h = clamp( ( p.y - uRampFloor ) / max( 0.001, uRampCeil - uRampFloor ), 0.0, 1.0 );
 					vec3 ramp = h < 0.5
 						? mix( uRampLow, uRampMid, h * 2.0 )
 						: mix( uRampMid, uRampHigh, ( h - 0.5 ) * 2.0 );
@@ -216,27 +205,46 @@ export class ScanField {
 					// The ramp is the read; the rig is the room. Mixing rather than
 					// choosing keeps a scanned wall reacting to a cove strip crossing
 					// it, which is what stops the world looking like a diagram.
-					Surface s;
-					s.pos = vWorld;
-					s.normal = normalize( vNrm );
-					s.albedo = ramp;
-					s.gloss = 0.0;
-					s.specular = 0.0;
-					vec3 color = mix( ramp * uGlow, directLighting( s, uCamPos ) + causticLight( s ), uLit );
+					Surface sf;
+					sf.pos = p;
+					sf.normal = normalize( aNormal );
+					sf.albedo = ramp;
+					sf.gloss = 0.0;
+					sf.specular = 0.0;
+					vec3 color = mix( ramp * uGlow, directLighting( sf, uCamPos ) + causticLight( sf ), uLit );
 
-					// Never quite still. A dead-static point cloud reads as geometry;
-					// a scan that shimmers reads as something being sensed.
-					float tw = sin( uTime * ( 1.4 + vSeed * 3.3 ) + vSeed * 90.0 ) * 0.5 + 0.5;
+					// Never quite still. A dead-static cloud reads as geometry; one
+					// that shimmers reads as something being sensed.
+					float tw = sin( uTime * ( 1.4 + aSeed * 3.3 ) + aSeed * 90.0 ) * 0.5 + 0.5;
 					color *= 1.0 - uSparkle + uSparkle * tw * 1.6;
 
-					color += volumetric( uCamPos, vWorld ) * uFogMix;
-					color = mix( color, applyFog( color, uCamPos, vWorld ), uFogMix );
+					color = mix( color, applyFog( color, uCamPos, p ), uFogMix );
+					color += vec3( 1.0, 0.42, 0.15 ) * aDamage * 0.8;
 
-					// Damaged points burn out rather than fading grey.
-					float alpha = ( 1.0 - vDamage * 0.75 ) * smoothstep( 1.0, 0.35, r2 );
-					color += vec3( 1.0, 0.42, 0.15 ) * vDamage * 0.8;
+					vColor = color;
+					vAlpha = 1.0 - aDamage * 0.75;
 
-					gl_FragColor = vec4( color, alpha );
+					vec4 mv = viewMatrix * vec4( p, 1.0 );
+					float dist = max( - mv.z, 0.05 );
+
+					// Between constant-world-size, which vanishes at range, and
+					// constant-pixel-size, which turns distance into a wall of dots.
+					float px = uPointSize * uPixelRatio / pow( dist, uSizeFalloff );
+					gl_PointSize = clamp( px, uMinPixels * uPixelRatio, uMaxPixels * uPixelRatio );
+					gl_Position = projectionMatrix * mv;
+				}
+			`,
+			fragmentShader: /* glsl */`
+				varying vec3 vColor;
+				varying float vAlpha;
+
+				void main() {
+					// Round points. Square ones read as pixels and give the whole
+					// thing away as a rasteriser rather than a return. Discard rather
+					// than blend, so the cloud stays opaque and early-z works.
+					vec2 q = gl_PointCoord * 2.0 - 1.0;
+					if ( dot( q, q ) > 1.0 ) discard;
+					gl_FragColor = vec4( vColor * vAlpha, 1.0 );
 				}
 			`
 		} );

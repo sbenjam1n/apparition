@@ -274,10 +274,10 @@ shred.onStrike = ( x, y, z, nx, ny, nz, joules, material, panel ) => {
 // almost nothing to look at, where dropping resolution costs a lot.
 const TIERS = [
 	{ dpr: 1.00, volumetric: 3, iterations: 6, substeps: 3, bloom: true, scan: 1.00 },
-	{ dpr: 1.00, volumetric: 2, iterations: 5, substeps: 3, bloom: true, scan: 0.82 },
-	{ dpr: 0.85, volumetric: 1, iterations: 4, substeps: 3, bloom: true, scan: 0.66 },
-	{ dpr: 0.72, volumetric: 0, iterations: 4, substeps: 2, bloom: true, scan: 0.52 },
-	{ dpr: 0.62, volumetric: 0, iterations: 3, substeps: 2, bloom: false, scan: 0.42 }
+	{ dpr: 1.00, volumetric: 2, iterations: 5, substeps: 3, bloom: true, scan: 0.74 },
+	{ dpr: 0.85, volumetric: 1, iterations: 4, substeps: 3, bloom: true, scan: 0.56 },
+	{ dpr: 0.72, volumetric: 0, iterations: 4, substeps: 2, bloom: true, scan: 0.42 },
+	{ dpr: 0.62, volumetric: 0, iterations: 3, substeps: 2, bloom: false, scan: 0.30 }
 ];
 
 const quality = {
@@ -752,8 +752,13 @@ function frame() {
 	last = now;
 
 	// A backgrounded tab returns with a huge dt; clamping is the difference
-	// between resuming and exploding.
-	if ( dt > 0.1 ) dt = 0.1;
+	// between resuming and exploding. The bound is loose rather than tight
+	// because it is not free: everything except the mouse is scaled by dt, so a
+	// machine running at 5fps under a hard 0.1 clamp puts the whole world into
+	// half speed while the camera, which integrates accumulated pointer delta,
+	// keeps turning at full rate. That asymmetry does not read as a low frame
+	// rate — it reads as the thrust keys having stopped working.
+	if ( dt > 0.25 ) dt = 0.25;
 	elapsed += dt;
 
 	governor( dt );
@@ -813,6 +818,7 @@ function frame() {
 	post.render( dt );
 
 	hud.update( dt, {
+		locked: input.locked,
 		tier: quality.tier,
 		dpr: quality.dpr,
 		active: solver.stats.active,

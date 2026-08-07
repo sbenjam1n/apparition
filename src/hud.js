@@ -81,7 +81,13 @@ export class Hud {
 
 		const sat = data.capacity > 0 ? data.poolMass / data.capacity : 0;
 
-		this.el.innerHTML =
+		// Say it out loud when the sim is not being driven. Escape releases pointer
+		// lock and the frame loop stops calling flight.update, which is correct and
+		// completely invisible — it presents as the thrust keys having died, and
+		// that is a diagnosis nobody should have to make twice.
+		const gate = data.locked === false ? `<span class="warn">PAUSED</span> — click to fly\n` : '';
+
+		this.el.innerHTML = gate +
 			`<b>${this.fps.toFixed( 0 ).padStart( 3 )}</b> fps   tier <b>${data.tier}</b>   dpr <b>${data.dpr.toFixed( 2 )}</b>\n` +
 			`bodies <b>${data.active}</b> awake  <b>${data.asleep}</b> settled  <b>${data.contacts}</b> contacts  x<b>${data.substeps}</b>\n` +
 			`\n` +

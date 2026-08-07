@@ -264,7 +264,7 @@ export class Flight {
 		const scale = 1 - T.drag;
 
 		// Guard against a tab that was backgrounded for ten seconds.
-		if ( count > 12 ) count = 12;
+		if ( count > 20 ) count = 20;
 
 		while ( count -- > 0 ) {
 
@@ -295,7 +295,7 @@ export class Flight {
 		const k = ( dt - count * T.substep ) / T.substep;
 		const scale = 1 - T.drag;
 
-		if ( count > 12 ) count = 12;
+		if ( count > 20 ) count = 20;
 
 		while ( count -- > 0 ) {
 

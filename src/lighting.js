@@ -161,6 +161,12 @@ export const LIGHT_GLSL = /* glsl */`
 
 	// Grout lines. Triplanar-lite: shade against the two axes the normal is not
 	// dominated by, so a tile grid wraps the room with no UV authoring.
+	//
+	// Guarded because fwidth() is fragment-only, and scan.js lights per *vertex*
+	// — including this chunk in a vertex shader fails to link, and the failure
+	// surfaces as a wall of INVALID_OPERATION rather than as a compile error you
+	// can read. Any stage that does not need grout defines LIGHT_NO_DERIVATIVES.
+	#ifndef LIGHT_NO_DERIVATIVES
 	float tileGrout( vec3 wp, vec3 n, float scale, float lineWidth ) {
 		vec3 an = abs( n );
 		vec2 uv = an.y > an.x && an.y > an.z ? wp.xz : ( an.x > an.z ? wp.zy : wp.xy );
@@ -168,6 +174,7 @@ export const LIGHT_GLSL = /* glsl */`
 		float line = min( g.x, g.y );
 		return 1.0 - clamp( line / max( lineWidth, 0.25 ), 0.0, 1.0 );
 	}
+	#endif
 
 	struct Surface {
 		vec3 pos;
