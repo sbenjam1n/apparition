@@ -28,6 +28,7 @@ import { Accretion, ACC, MATERIAL_NAME } from './accretion.js';
 import { Destruction, addTestPanels, PANEL_STATE, PANEL_STATE_NAME } from './destruct.js';
 import { DustField } from './dust.js';
 import { ShredField, SHRED } from './shred.js';
+import { ScanField, SCAN } from './scan.js';
 import { PostStack, POST } from './fx.js';
 import { ImpactAudio } from './audio.js';
 import { Hud } from './hud.js';
@@ -69,6 +70,27 @@ const dust = new DustField( scene, rig, {
 
 scatterProps( solver, ( i, kind ) => debris.register( i, kind ) );
 
+// The scan. Built from the solver's own colliders — scan.js says why that is not
+// optional — and off by default, because the whole point of building it as an
+// overlay is being able to A/B it against the meshes in the same room rather than
+// arguing about it.
+const scan = new ScanField( scene, rig, ROOM );
+scan.build( solver );
+
+const VIEW = { mode: 'mesh' };
+
+function applyView() {
+
+	const showMesh = VIEW.mode !== 'scan';
+	room.group.visible = showMesh;
+	scan.points.visible = VIEW.mode !== 'mesh';
+	for ( const p of panels ) if ( p.mesh ) p.mesh.visible = showMesh;
+	// Loose matter keeps its solid geometry in every mode. That is the correct
+	// read rather than a compromise: architecture is inferred from a scan, and a
+	// chunk you tore out of it is a real thing you are carrying.
+
+}
+
 const post = new PostStack( renderer, scene, camera );
 const audio = new ImpactAudio();
 const hud = new Hud( document.getElementById( 'hud' ), document.getElementById( 'reticle' ) );
@@ -91,6 +113,12 @@ solver.onImpact = ( i, speed, x, y, z, material ) => {
 		  ( z - flight.viewPosition.z ) * _camDir.z ) * 0.2 ) );
 
 	audio.impact( speed, material, pan );
+
+	if ( VIEW.mode !== 'mesh' && speed > 3 ) {
+
+		scan.carve( x, y, z, 0.22 + Math.min( 1.0, speed * 0.045 ), Math.min( 0.9, speed * 0.035 ) );
+
+	}
 
 	// A heavy hit near a fixture makes it stutter. §22.4: your own noise is your
 	// liability, and here it is visible as well as audible.
@@ -160,6 +188,9 @@ accretion.onConsume = ( kind, mass, x, y, z ) => {
 	// dust plume on top of it just fogs the thing you want to watch come apart.
 	dust.puff( x, y, z, 200 + mass * 3, 0, 1, 0 );
 
+	// Eating something against a surface takes a bite out of the surface too.
+	if ( VIEW.mode !== 'mesh' ) scan.carve( x, y, z, 0.5 + Math.min( 2.2, mass * 0.004 ), Math.min( 1, mass * 0.006 ) );
+
 	if ( mass > 55 ) {
 
 		rig.shockwave( x, y, z, Math.min( 0.13, 0.03 + mass * 0.00018 ), 9, 17 );
@@ -192,6 +223,16 @@ const shredWorld = { planes: solver.planes, boxes: solver.boxes, panels };
 shred.onStrike = ( x, y, z, nx, ny, nz, joules, material, panel ) => {
 
 	if ( panel || destruction.hasActive ) destruction.strike( x, y, z, - nx, - ny, - nz, joules );
+
+	// Erosion. One call, no chunk grid, no weld lattice, no state machine — this
+	// is the entire destruction model for a scanned surface, and unlike destruct.js
+	// it works on every surface in the room rather than on the three that were
+	// authored for it.
+	if ( VIEW.mode !== 'mesh' ) {
+
+		scan.carve( x, y, z, 0.10 + Math.min( 0.5, joules * 0.0016 ), Math.min( 0.7, joules * 0.004 ) );
+
+	}
 
 	if ( strikeBudget > 0 && joules > 6 ) {
 
@@ -357,6 +398,22 @@ gAcc.add( accretion, 'selected', {
 	tile: MATERIAL_KIND.TILE, concrete: MATERIAL_KIND.CONCRETE,
 	glass: MATERIAL_KIND.GLASS, steel: MATERIAL_KIND.STEEL
 } ).name( 'firing (wheel)' ).listen();
+
+const gScan = gui.addFolder( 'Scan (point-cloud world)' );
+gScan.add( VIEW, 'mode', [ 'mesh', 'scan', 'both' ] ).name( 'world' ).onChange( applyView );
+gScan.add( SCAN, 'pointSize', 0.5, 8, 0.1 ).name( 'point size (px @ 1m)' );
+gScan.add( SCAN, 'sizeFalloff', 0, 1.2, 0.02 ).name( 'size falloff' );
+gScan.add( SCAN, 'maxPixels', 1, 12, 0.5 ).name( 'max px' );
+// Zero is a pure LIDAR diagram, one is the room's own lighting rig on a point
+// set. The interesting settings are between, and that is the actual question
+// this overlay exists to answer.
+gScan.add( SCAN, 'lit', 0, 1, 0.02 ).name( 'ramp <-> rig' );
+gScan.add( SCAN, 'glow', 0, 3, 0.05 ).name( 'return glow' );
+gScan.add( SCAN, 'fogMix', 0, 1, 0.02 ).name( 'atmosphere on scan' );
+gScan.add( SCAN, 'sparkle', 0, 1, 0.02 ).name( 'shimmer' );
+gScan.add( SCAN, 'rampFloor', - 4, 4, 0.1 ).name( 'ramp floor (m)' );
+gScan.add( SCAN, 'rampCeil', 2, 14, 0.1 ).name( 'ramp ceiling (m)' );
+gScan.add( SCAN, 'loosen', 0, 2, 0.02 ).name( 'loosen before drop' );
 
 const gShred = gui.addFolder( 'Shards' );
 // Stretch is the whole look. At zero these are specks; the streak is what makes
@@ -584,6 +641,7 @@ const actions = {
 		for ( const p of panels ) destruction.activate( p );
 
 	},
+	healScan() { scan.restore(); },
 	clearDebris() {
 
 		accretion.vent();
@@ -601,6 +659,7 @@ gui.add( actions, 'resetFlight' ).name( 'reset position (G)' );
 gui.add( actions, 'respawnPanels' ).name( 'restore panels' );
 gui.add( actions, 'activatePanels' ).name( 'activate panels' );
 gui.add( actions, 'clearDebris' ).name( 'clear debris' );
+gui.add( actions, 'healScan' ).name( 'heal the scan' );
 gui.add( actions, 'relight' ).name( 'restore lighting' );
 
 // Open, with the lighting folder expanded and the rest collapsed. Lighting is
@@ -608,6 +667,7 @@ gui.add( actions, 'relight' ).name( 'restore lighting' );
 // have to go find is a panel nobody opens.
 gFlight.close();
 gCam.close();
+gScan.close();
 gShred.close();
 gPhys.close();
 gJoint.close();
@@ -713,6 +773,7 @@ function frame() {
 	strikeBudget = 6;
 	shred.update( dt, shredWorld, accretion.disc, shred.onStrike );
 	dust.update( dt, flight.viewPosition, flight.velocity );
+	if ( VIEW.mode !== 'mesh' ) scan.update( dt );
 
 	rig.uniforms.uTime.value = elapsed;
 	rig.update( dt, flight.viewPosition );
@@ -754,6 +815,9 @@ function frame() {
 		inFunnel: accretion.inFunnel,
 		consumed: accretion.consumed,
 		stalled: accretion.stalled,
+		scanMode: VIEW.mode,
+		scanPoints: scan.count,
+		scanEroded: scan.eroded,
 		shards: shred.live,
 		jetRate: accretion.jetRate,
 		struck: shred.struck,
@@ -771,11 +835,12 @@ addEventListener( 'resize', () => {
 	camera.updateProjectionMatrix();
 	renderer.setSize( innerWidth, innerHeight );
 	post.setSize( innerWidth, innerHeight, quality.dpr );
+	scan.uniforms.uPixelRatio.value = quality.dpr;
 
 } );
 
 frame();
 
 // Exposed for console poking during tuning.
-window.APPARITION = { solver, rig, flight, accretion, destruction, debris, dust, shred, panels, quality, post,
-	TUNING, ACC, POST, SHRED, copyTuning, readTuning, formatTuning };
+window.APPARITION = { solver, rig, flight, accretion, destruction, debris, dust, shred, scan, panels, quality, post,
+	TUNING, ACC, POST, SHRED, SCAN, VIEW, applyView, copyTuning, readTuning, formatTuning };
