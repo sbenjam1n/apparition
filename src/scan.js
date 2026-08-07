@@ -54,6 +54,7 @@
 
 import * as THREE from 'three';
 import { LIGHT_GLSL } from './lighting.js';
+import { HYDRA_READ_GLSL, HYDRA } from './hydra.js';
 
 export const SCAN = {
 
@@ -164,7 +165,13 @@ export class ScanField {
 			uGlow: { value: SCAN.glow },
 			uFogMix: { value: SCAN.fogMix },
 			uLoosen: { value: SCAN.loosen },
-			uPixelRatio: { value: 1 }
+			uPixelRatio: { value: 1 },
+			// The loop, read back into the geometry.
+			uFeed: { value: null },
+			uPrevViewProj: { value: new THREE.Matrix4() },
+			uFeedDisplace: { value: HYDRA.worldDisplace },
+			uFeedTint: { value: HYDRA.worldTint },
+			uFeedOn: { value: 0 }
 		} );
 
 		// Lit per *point*, not per fragment, and that is the difference between
@@ -187,7 +194,7 @@ export class ScanField {
 			transparent: false,
 			depthWrite: true,
 			blending: THREE.NormalBlending,
-			vertexShader: '#define LIGHT_NO_DERIVATIVES\n' + LIGHT_GLSL + /* glsl */`
+			vertexShader: '#define LIGHT_NO_DERIVATIVES\n' + LIGHT_GLSL + HYDRA_READ_GLSL + /* glsl */`
 				attribute vec3 aNormal;
 				attribute float aDamage;
 				attribute float aSeed;
@@ -256,6 +263,20 @@ export class ScanField {
 
 					color = mix( color, applyFog( color, uCamPos, p ), uFogMix );
 					color += vec3( 1.0, 0.42, 0.15 ) * aDamage * 0.8;
+
+					// Read the loop back. The point samples the after-image at where it
+					// was on screen last frame and lets it push and recolour it, so the
+					// room is deformed by its own trail rather than having a trail
+					// painted over it. This is the whole reason the feedback buffer is
+					// exposed to the world instead of living inside the compositor.
+					vec3 fb = feedAt( p );
+					float fl = dot( fb, vec3( 0.299, 0.587, 0.114 ) );
+
+					if ( fl > 0.001 ) {
+						p += normalize( aNormal + vec3( fb.r - fb.b, fb.g - fb.r, fb.b - fb.g ) * 1.5 )
+							* fl * uFeedDisplace;
+						color = mix( color, color + fb * 1.4, uFeedTint * min( 1.0, fl * 2.2 ) );
+					}
 
 					vColor = color;
 					vAlpha = 1.0 - aDamage * 0.75;
@@ -782,6 +803,16 @@ export class ScanField {
 
 	}
 
+	// Hand the world its own after-image, plus the matrix that says where each
+	// point was on screen when that image was made.
+	readFeedback( texture, prevViewProj, on ) {
+
+		this.uniforms.uFeed.value = texture;
+		this.uniforms.uFeedOn.value = on && texture ? 1 : 0;
+		if ( prevViewProj ) this.uniforms.uPrevViewProj.value.copy( prevViewProj );
+
+	}
+
 	update( dt ) {
 
 		if ( SCAN.settle > 0 ) {
@@ -813,6 +844,8 @@ export class ScanField {
 		u.uLoosen.value = SCAN.loosen;
 		u.uRampFloor.value = SCAN.rampFloor;
 		u.uRampCeil.value = SCAN.rampCeil;
+		u.uFeedDisplace.value = HYDRA.worldDisplace;
+		u.uFeedTint.value = HYDRA.worldTint;
 
 	}
 

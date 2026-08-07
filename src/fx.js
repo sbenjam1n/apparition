@@ -18,9 +18,49 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { AfterimagePass } from 'three/addons/postprocessing/AfterimagePass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
+import { CopyShader } from 'three/addons/shaders/CopyShader.js';
 import { ACC } from './accretion.js';
+import { HydraChain, HYDRA } from './hydra.js';
 
 const _size = new THREE.Vector2();
+
+// The hydra chain owns persistent ping-pong targets, which an EffectComposer pass
+// does not — a pass is handed a read and a write buffer that swap under it, and
+// feedback needs a buffer that survives. So the chain renders into its own pair
+// and this blits the result back into the composer's chain, which costs one
+// full-screen copy and keeps the loop's state out of the composer's hands.
+class HydraPass extends Pass {
+
+	constructor( chain ) {
+
+		super();
+		this.chain = chain;
+		this.elapsed = 0;
+		this.material = new THREE.ShaderMaterial( {
+			uniforms: THREE.UniformsUtils.clone( CopyShader.uniforms ),
+			vertexShader: CopyShader.vertexShader,
+			fragmentShader: CopyShader.fragmentShader,
+			depthTest: false, depthWrite: false
+		} );
+		this.fsQuad = new FullScreenQuad( this.material );
+
+	}
+
+	render( renderer, writeBuffer, readBuffer ) {
+
+		const out = this.chain.render( readBuffer.texture, this.elapsed );
+		this.material.uniforms.tDiffuse.value = out;
+		renderer.setRenderTarget( this.renderToScreen ? null : writeBuffer );
+		if ( this.clear ) renderer.clear();
+		this.fsQuad.render( renderer );
+
+	}
+
+	get enabled() { return HYDRA.enabled; }
+	set enabled( v ) { /* driven by HYDRA.enabled */ }
+
+}
 
 export const POST = {
 	bloomStrength: 0.5,
@@ -133,11 +173,19 @@ export class PostStack {
 		this.afterimage.uniforms.damp.value = POST.trailPersistence;
 		this.afterimage.enabled = false;
 
+		// The feedback loop sits after bloom so that what recirculates is already
+		// glowing, and before the final grade so the grain and vignette land on
+		// the composite rather than being fed back into it — grain in a feedback
+		// loop compounds into a blizzard within a second.
+		this.hydraChain = new HydraChain( renderer );
+		this.hydra = new HydraPass( this.hydraChain );
+
 		this.final = new ShaderPass( FinalShader );
 		this.output = new OutputPass();
 
 		this.composer.addPass( this.renderPass );
 		this.composer.addPass( this.bloom );
+		this.composer.addPass( this.hydra );
 		this.composer.addPass( this.afterimage );
 		this.composer.addPass( this.final );
 		this.composer.addPass( this.output );
@@ -168,6 +216,10 @@ export class PostStack {
 		this.renderer.getDrawingBufferSize( _size );
 		this.final.uniforms.uResolution.value.copy( _size );
 		this.final.uniforms.uPixelRatio.value = dpr;
+		// Same single authority as everything else here: the drawing buffer. A
+		// feedback target sized off anything else drifts against the frame it is
+		// sampling and the loop smears in one direction forever.
+		this.hydraChain.setSize( _size.x, _size.y );
 
 	}
 
@@ -218,9 +270,18 @@ export class PostStack {
 
 	}
 
-	render( dt ) {
+	render( dt, elapsed = 0 ) {
 
+		this.hydra.elapsed = elapsed;
 		this.composer.render( dt );
+
+	}
+
+	// The texture the world reads back, so geometry can be warped by its own
+	// after-image rather than only being smeared on screen.
+	get feedback() {
+
+		return this.hydraChain.texture;
 
 	}
 

@@ -30,6 +30,7 @@ import { DustField } from './dust.js';
 import { ShredField, SHRED } from './shred.js';
 import { ScanField, SCAN } from './scan.js';
 import { PostStack, POST } from './fx.js';
+import { HYDRA } from './hydra.js';
 import { ImpactAudio } from './audio.js';
 import { Hud } from './hud.js';
 
@@ -114,6 +115,7 @@ document.getElementById( 'gate' ).addEventListener( 'click', () => audio.resume(
 // --- reactions --------------------------------------------------------------
 
 const _camDir = new THREE.Vector3();
+const _prevViewProj = new THREE.Matrix4();
 
 solver.onImpact = ( i, speed, x, y, z, material ) => {
 
@@ -440,6 +442,29 @@ gScan.add( SCAN, 'rampFloor', - 4, 4, 0.1 ).name( 'ramp floor (m)' );
 gScan.add( SCAN, 'rampCeil', 2, 14, 0.1 ).name( 'ramp ceiling (m)' );
 gScan.add( SCAN, 'loosen', 0, 2, 0.02 ).name( 'loosen before drop' );
 
+const gHydra = gui.addFolder( 'Hydra (feedback)' );
+gHydra.add( HYDRA, 'enabled' ).name( 'loop on' )
+	.onChange( v => { if ( ! v ) post.hydraChain.clear(); } );
+// The two that decide whether the loop settles, breathes, or runs away. Above
+// about 0.97 feedback with any live injection it never decays and the frame
+// fills; hydra's own sketches live right on that edge on purpose.
+gHydra.add( HYDRA, 'feedback', 0, 0.995, 0.005 ).name( 'src(o0) survives' );
+gHydra.add( HYDRA, 'live', 0, 1.5, 0.02 ).name( 'live injection' );
+gHydra.add( HYDRA, 'decay', 0, 0.05, 0.001 ).name( 'bleed to black' );
+gHydra.add( HYDRA, 'modAmount', 0, 0.06, 0.0005 ).name( 'modulate' );
+gHydra.add( HYDRA, 'modScale', 0.2, 14, 0.1 ).name( 'modulate scale' );
+gHydra.add( HYDRA, 'modSpeed', 0, 2, 0.01 ).name( 'modulate speed' );
+gHydra.add( HYDRA, 'selfModulate', 0, 3, 0.05 ).name( 'self-modulate' );
+gHydra.add( HYDRA, 'rotate', - 0.4, 0.4, 0.005 ).name( 'rotate / pass' );
+gHydra.add( HYDRA, 'zoom', 0.97, 1.03, 0.001 ).name( 'zoom / pass' );
+gHydra.add( HYDRA, 'colorama', - 0.15, 0.15, 0.002 ).name( 'colorama' );
+gHydra.add( HYDRA, 'saturate', 0, 3, 0.02 ).name( 'saturate' );
+gHydra.add( HYDRA, 'chromaSplit', 0, 0.01, 0.0002 ).name( 'chroma split' );
+gHydra.add( HYDRA, 'gain', 0.8, 1.3, 0.01 ).name( 'gain' );
+// The part that is not a screen filter: the geometry reading the loop back.
+gHydra.add( HYDRA, 'worldDisplace', 0, 3, 0.02 ).name( 'world displace (m)' );
+gHydra.add( HYDRA, 'worldTint', 0, 2, 0.02 ).name( 'world tint' );
+
 const gShred = gui.addFolder( 'Shards' );
 // Stretch is the whole look. At zero these are specks; the streak is what makes
 // fast debris read as sharp rather than as boxes drifting past.
@@ -547,6 +572,9 @@ const TUNE_GROUPS = [
 		'drag', 'lifeMin', 'lifeMax', 'bounce', 'strikeScale' ] ],
 	[ 'solver', solver, [ 'iterations', 'beta', 'alpha', 'gamma', 'postStabilize',
 		'sleepTime', 'gravity', 'maxSubsteps', 'maxTravel', 'creepRate' ] ],
+	[ 'HYDRA', HYDRA, [ 'feedback', 'live', 'decay', 'modAmount', 'modScale', 'modSpeed',
+		'selfModulate', 'rotate', 'zoom', 'colorama', 'saturate', 'chromaSplit', 'gain',
+		'worldDisplace', 'worldTint' ] ],
 	[ 'POST', POST, [ 'bloomStrength', 'bloomThreshold', 'bloomRadius',
 		'grain', 'vignette', 'scanline', 'exposure' ] ],
 	[ 'dust', dust, [ 'densityDecay' ] ]
@@ -693,6 +721,7 @@ gui.add( actions, 'relight' ).name( 'restore lighting' );
 gFlight.close();
 gCam.close();
 gScan.close();
+gHydra.open();
 gShred.close();
 gPhys.close();
 gJoint.close();
@@ -815,7 +844,17 @@ function frame() {
 	camera.quaternion.copy( flight.viewQuaternion );
 
 	post.update( dt, elapsed, { watts: accretion.watts, heat: accretion.heat, dilation } );
-	post.render( dt );
+
+	// Hand the world last frame's composite before drawing this one, along with
+	// the matrix that says where each point was when that image was made. The
+	// order matters: read first, then render, or the geometry would be sampling a
+	// buffer produced from geometry that has already moved.
+	if ( VIEW.mode !== 'mesh' ) scan.readFeedback( post.feedback, _prevViewProj, HYDRA.enabled );
+
+	post.render( dt, elapsed );
+
+	camera.updateMatrixWorld();
+	_prevViewProj.multiplyMatrices( camera.projectionMatrix, camera.matrixWorldInverse );
 
 	hud.update( dt, {
 		locked: input.locked,
@@ -874,4 +913,4 @@ frame();
 
 // Exposed for console poking during tuning.
 window.APPARITION = { solver, rig, flight, accretion, destruction, debris, dust, shred, scan, panels, quality, post,
-	TUNING, ACC, POST, SHRED, SCAN, VIEW, applyView, copyTuning, readTuning, formatTuning };
+	TUNING, ACC, POST, SHRED, SCAN, HYDRA, VIEW, applyView, copyTuning, readTuning, formatTuning };

@@ -176,6 +176,36 @@ architecture being sensed — and so does loose debris. That second one is a
 position rather than a compromise: solidity marks what you can touch, which is
 most of what keeps a point-cloud world readable.
 
+**Feedback** (`hydra.js`) — a chain in the shape of Olivia Jack's
+[hydra](https://github.com/hydra-synth/hydra), which is a live-coded video synth
+built on WebGL framebuffers. One capability is borrowed and it is the one that
+makes it: `src(o0)`, sampling an output's *previous frame* and feeding it back
+into itself. Hydra does that with a
+[ping-pong pair of framebuffers per output](https://github.com/geikha/hyper-hydra/blob/main/doc/hydra-outputs.md)
+— two textures alternating read and write roles, because you cannot read and
+write one texture in a pass — and exposes more via `setBufferCount()` precisely
+to stop coupled feedback period-doubling into a strobe. Same structure here.
+
+The live-coding half is deliberately not borrowed: hydra evaluates JS at runtime,
+this compiles one fixed chain with a uniform per stage. The vocabulary is the
+subset that produces the look — `src(o0)`, `modulate` (warp one thing's sampling
+coordinates by another's brightness, which is *the* operator), `rotate`, `scale`,
+`colorama`, `diff`.
+
+**And it is not only a screen filter.** The accumulated buffer is handed back to
+`scan.js`, and every point samples it at its own *previous-frame screen position*
+to displace and recolour itself. So the geometry is warped by the after-image of
+the geometry — output becomes input at the world level, not just the frame. A
+point off screen last frame reads black, which is correct: an unseen thing has no
+after-image.
+
+The defaults sit below runaway on purpose. A screen blend has a fixed point at
+`p = 1 − (1 − feedback·p)(1 − live)`, and the first pass at 0.88 / 0.62 landed
+around 0.93 — the loop filled the frame with rolling colour in two seconds and
+the room vanished inside its own trail. That is a real hydra behaviour and worth
+reaching on the sliders; it cannot be the resting state of a world you fly
+through.
+
 **Shards** (`shred.js`) — the ammunition is not rigid bodies. It cannot be: the
 solver caps at 640 with a contact graph behind each one, so "more debris" bought
 more cost and never bought the feeling of something being torn apart. Eight
