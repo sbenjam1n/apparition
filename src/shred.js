@@ -503,6 +503,15 @@ export class ShredField {
 	// landing fast enough to count.
 	update( dt, world, disc, onStrike ) {
 
+		// Pushed every frame rather than on a slider's onChange. A route writes
+		// SHRED.stretch directly and never goes near the panel, so a hook hung off
+		// the panel would make exactly the parameters that look most alive under
+		// modulation the four that silently refuse to move.
+		this.uniforms.uStretch.value = SHRED.stretch;
+		this.uniforms.uMaxLength.value = SHRED.maxLength;
+		this.uniforms.uWidth.value = SHRED.width;
+		this.uniforms.uMinAngular.value = SHRED.minAngular;
+
 		const m = this._m;
 		let slot = 0, live = 0;
 		this.struck = 0;

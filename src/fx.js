@@ -244,6 +244,11 @@ export class PostStack {
 
 		const load = Math.min( 1, watts / ACC.wattScale );
 		this.bloom.strength = POST.bloomStrength * ( 1 + load * 0.55 + Math.min( heat / 100, 1 ) * 0.25 );
+		// Radius and threshold used to be applied only when a slider moved, which
+		// left them the two post parameters a route could address and not actually
+		// change. Everything declared as tunable has to be read where it is used.
+		this.bloom.radius = POST.bloomRadius;
+		this.bloom.threshold = POST.bloomThreshold;
 
 		// Trails belong to dilation — a charging phase whose payload lands when
 		// you drop the clock (§10.4). Off entirely at 1:1.
@@ -259,7 +264,11 @@ export class PostStack {
 		}
 
 		this._erasure = Math.max( 0, this._erasure - dt * 1.8 );
-		this.final.uniforms.uChromaticShift.value = this._erasure * 0.006;
+		// Erasure plus whatever is dialled or routed. §44.9 reserves chroma bleed
+		// for erasure and the default stays at zero for that reason, but reserving
+		// it is a decision about the *look*, not a reason to make the parameter
+		// unreachable — the panel is where that argument gets had.
+		this.final.uniforms.uChromaticShift.value = POST.chromaticShift + this._erasure * 0.006;
 
 		this.final.uniforms.uTime.value = elapsed;
 		this.final.uniforms.uFrame.value = this.frame;

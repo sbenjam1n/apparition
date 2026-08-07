@@ -31,8 +31,9 @@ import { ShredField, SHRED } from './shred.js';
 import { ScanField, SCAN } from './scan.js';
 import { PostStack, POST } from './fx.js';
 import { HYDRA } from './hydra.js';
-import { ModMatrix, CURVES, WHEN } from './modulation.js';
+import { ModMatrix, CURVES } from './modulation.js';
 import { MetaSurface, SurfaceMarkers } from './metasurface.js';
+import { PARAMS, BY_PATH, FOLDERS, paramsIn, warnLevel } from './params.js';
 import { ImpactAudio } from './audio.js';
 import { Hud } from './hud.js';
 
@@ -110,11 +111,31 @@ applyView();
 // --- the patch bay ----------------------------------------------------------
 //
 // Everything the look is made of is a destination; everything the game knows
-// about itself is a source. Routes are data, so a look is a list rather than a
-// branch in the render loop, and the same mechanism drives the feedback chain,
-// the scan and the post grade.
+// about itself is a source. Routes are data rather than branches in the render
+// loop, which is why the same mechanism drives the feedback chain, the scan, the
+// post grade and the flight model.
+//
+// The routes below are a starting patch and nothing more. Every one of them is
+// on the panel with its own on switch, amount, curve, a live number saying what
+// it is writing this instant, and an unpatch button; new ones are made from any
+// registered source to any parameter in the table without touching source. What
+// this file provides is a default, not a fixture.
+//
+// That distinction is the whole repair. The previous version had the same
+// twenty-six routes and no way to see or remove any of them, and two of them
+// summed HYDRA.feedback from 0.70 to 1.11 — above one, a screen-blend loop
+// multiplies every pass and the room is gone in about two seconds. Three numbers
+// adding to 1.11 look exactly like one number that is 1.11, so the sum was
+// unfindable, and the routes were mine rather than chosen, so the obvious first
+// move was not available either.
+//
+// The division of labour: sources live in code because each one reads something
+// out of the world, which is the part that genuinely needs code. Destinations
+// come from the parameter table. Everything else is runtime. Adding a source or
+// a parameter never means editing the panel, the routable set or the readout,
+// because none of the three keeps a list of its own any more.
 
-const mod = new ModMatrix( { HYDRA, SCAN, POST, ACC, SHRED } );
+const mod = new ModMatrix( { HYDRA, SCAN, POST, ACC, SHRED, TUNING } );
 
 mod
 	.addSource( 'speed', st => st.speed / 30, { attack: 0.25, release: 0.9 } )
@@ -140,87 +161,90 @@ mod
 	// so the routing is real and only the definition of "enemy" is pending.
 	.addSource( 'proximity', st => st.proximity, { attack: 0.2, release: 1.0 } );
 
-// A starting patch. Every one of these is a guess to be argued with on the
-// panel, which is the point of it being a list.
-mod
+// A starting patch, written as data rather than as a call chain — `route()`
+// hands back the route so the editor can hold on to it, so a chain would not
+// read anyway, and a table is the honest shape for something that is meant to be
+// edited from outside.
+//
+// Every entry gets its own folder in the panel: an on switch, an amount, a
+// curve, a live number saying what it is writing this instant, and an unpatch
+// button. Nothing here is load-bearing, and nothing here is privileged over a
+// route patched by hand a minute ago.
+//
+// Two amounts are detuned from what they were. HYDRA.feedback rests at 0.70, and
+// speed at 0.16 plus dilation at 0.25 put it at 1.11 with both up — above one a
+// screen-blend loop multiplies every pass and the room is gone in about two
+// seconds. The routes were right; the arithmetic was just never anywhere it
+// could be seen. It is now, and these two are set so the default stays
+// contractive at full deflection instead of depending on nobody dilating at
+// speed. Both are sliders: going past one on purpose is a legitimate thing to
+// want, and the readout says when you have.
+
+const STARTING_PATCH = [
+
 	// The faster you go, the more the loop drags — this is the one that makes
 	// speed feel like something rather than a number.
-	.route( 'speed', 'HYDRA.feedback', 0.16, 'square' )
-	.route( 'speed', 'HYDRA.zoom', 0.006, 'square' )
-	.route( 'burn', 'HYDRA.modAmount', 0.010 )
-	// Carrying mass folds the frame. The disc is the resource you watch, so it
-	// gets the biggest visual lever in the file.
-	// Calibrated by looking. At seven sides a full disc folds the brightest
-	// region of the room across the entire frame and the world disappears into a
-	// mandala — the route is right, the amount was not. Four is a fold you read
-	// as pressure rather than as a takeover, and the panel goes to sixteen.
-	.route( 'disc', 'HYDRA.kaleid', 4, 'square' )
-	.route( 'disc', 'HYDRA.colorama', 0.02 )
-	.route( 'disc', 'HYDRA.saturate', 0.25 )
-	.route( 'draw', 'HYDRA.selfModulate', 0.9, 'square' )
-	.route( 'draw', 'POST.bloomStrength', 0.35 )
-	.route( 'heat', 'HYDRA.shiftR', 0.035 )
-	.route( 'heat', 'HYDRA.chromaSplit', 0.004 )
-	// Opening the funnel pulls the whole field into it.
-	.route( 'intake', 'HYDRA.rotate', 0.055 )
-	.route( 'intake', 'HYDRA.modRotateAmount', 0.09 )
-	.route( 'channel', 'HYDRA.modScaleAmount', 0.02 )
-	.route( 'channel', 'HYDRA.live', 0.30 )
-	// Getting hit throws the loop and it takes a beat to settle.
-	.route( 'impact', 'HYDRA.modAmount', 0.030, 'root' )
-	.route( 'impact', 'HYDRA.invert', 0.35, 'square' )
-	.route( 'eaten', 'HYDRA.worldDisplace', 0.9, 'root' )
-	// Wrecked ground reads as failing resolution rather than as damage decals —
-	// §48's register, driven by the thing it should have been driven by.
-	.route( 'ruin', 'HYDRA.pixelate', 90, 'square' )
-	.route( 'ruin', 'HYDRA.posterize', 6, 'gate' )
-	.route( 'dark', 'HYDRA.thresh', 0.16 )
-	.route( 'dark', 'SCAN.glow', 0.5 )
-	.route( 'dilation', 'HYDRA.feedback', 0.25 )
-	.route( 'dilation', 'HYDRA.modSpeed', - 0.12 )
-	.route( 'height', 'HYDRA.colorama', 0.02, 'band' )
-	.route( 'proximity', 'HYDRA.repeatX', 2.5, 'square' )
-	.route( 'proximity', 'HYDRA.repeatY', 2.5, 'square' );
+	[ 'speed', 'HYDRA.feedback', 0.10, 'square' ],
+	[ 'speed', 'HYDRA.zoom', 0.004, 'square' ],
+	[ 'burn', 'HYDRA.modAmount', 0.010 ],
 
-// Location. Offsets rather than absolutes, feathered, and they sum — so the
-// corner where two overlap is a place neither of them describes on its own.
-mod
-	.zone( 'the pool', { x: 0, y: 0.4, z: 4.2, radius: 5.0, feather: 4.5, set: {
-		'HYDRA.colorama': 0.04, 'HYDRA.fieldMix': 0.5, 'HYDRA.modAmount': 0.006,
-		'SCAN.rampFloor': - 3.0
-	} } )
-	.zone( 'the piers', { x: 7.6, y: 2.6, z: - 7.0, radius: 6.0, feather: 5.0, set: {
-		'HYDRA.repeatY': 3, 'HYDRA.kaleid': 4, 'HYDRA.rotate': - 0.03
-	} } )
-	.zone( 'behind the partition', { x: - 8.0, y: 2.8, z: - 3.0, radius: 5.5, feather: 4.0, set: {
-		'HYDRA.thresh': 0.22, 'HYDRA.invert': 0.5, 'HYDRA.saturate': - 0.5,
-		'SCAN.sparkle': 0.4
-	} } );
+	// Carrying mass folds the frame. The disc is the resource you watch, so it
+	// gets the biggest visual lever in the file. At seven sides a full disc folds
+	// the brightest region of the room across the whole frame and the world
+	// disappears into a mandala; four reads as pressure rather than as a takeover.
+	[ 'disc', 'HYDRA.kaleid', 4, 'square' ],
+	[ 'disc', 'HYDRA.colorama', 0.02 ],
+	[ 'disc', 'HYDRA.saturate', 0.25 ],
+
+	[ 'draw', 'HYDRA.selfModulate', 0.9, 'square' ],
+	[ 'draw', 'POST.bloomStrength', 0.35 ],
+	[ 'heat', 'HYDRA.shiftR', 0.035 ],
+	[ 'heat', 'HYDRA.chromaSplit', 0.004 ],
+
+	// Opening the funnel pulls the whole field into it.
+	[ 'intake', 'HYDRA.rotate', 0.055 ],
+	[ 'intake', 'HYDRA.modRotateAmount', 0.09 ],
+	[ 'channel', 'HYDRA.modScaleAmount', 0.02 ],
+	[ 'channel', 'HYDRA.live', 0.30 ],
+
+	// Getting hit throws the loop and it takes a beat to settle.
+	[ 'impact', 'HYDRA.modAmount', 0.030, 'root' ],
+	[ 'impact', 'HYDRA.invert', 0.35, 'square' ],
+	[ 'eaten', 'HYDRA.worldDisplace', 0.9, 'root' ],
+
+	// Wrecked ground reads as failing resolution rather than as damage decals —
+	// §48's register, driven by the thing that should have been driving it.
+	[ 'ruin', 'HYDRA.pixelate', 90, 'square' ],
+	[ 'ruin', 'HYDRA.posterize', 6, 'gate' ],
+	[ 'dark', 'HYDRA.thresh', 0.16 ],
+	[ 'dark', 'SCAN.glow', 0.5 ],
+
+	[ 'dilation', 'HYDRA.feedback', 0.14 ],
+	[ 'dilation', 'HYDRA.modSpeed', - 0.12 ],
+	[ 'height', 'HYDRA.colorama', 0.02, 'band' ],
+	[ 'proximity', 'HYDRA.repeatX', 2.5, 'square' ],
+	[ 'proximity', 'HYDRA.repeatY', 2.5, 'square' ]
+
+];
+
+for ( const [ from, to, amount, curve ] of STARTING_PATCH ) mod.route( from, to, amount, curve );
 
 // --- metasurfaces -----------------------------------------------------------
 //
-// Three surfaces, each owning a disjoint set of parameters, because the topology
-// of where the *look* changes has no reason to match where the *mechanics* do.
-// One might want six presets clustered around the pool; another might want two
-// for the whole building.
+// Bencina's two-to-many mapping: parameter snapshots placed on the plan of the
+// level, natural-neighbour interpolation between them, and placement doing the
+// authoring. One surface per parameter folder, so each owns a disjoint set —
+// two surfaces writing one parameter is the thing that makes a layered system
+// impossible to reason about, and splitting by folder makes that structural
+// rather than something to remember.
+//
+// Deriving the key sets from the table rather than listing them means a
+// parameter added to params.js is placeable without touching this file. Every
+// surface starts empty, and an empty surface does nothing whatsoever — what
+// belongs where is a question for somebody who can see it.
 
-const surfaces = [
-	new MetaSurface( 'look', [
-		'HYDRA.feedback', 'HYDRA.live', 'HYDRA.modAmount', 'HYDRA.modScale',
-		'HYDRA.selfModulate', 'HYDRA.fieldMix', 'HYDRA.kaleid', 'HYDRA.repeatX',
-		'HYDRA.repeatY', 'HYDRA.rotate', 'HYDRA.colorama', 'HYDRA.saturate',
-		'HYDRA.thresh', 'HYDRA.pixelate', 'HYDRA.posterize', 'HYDRA.invert'
-	], { vertical: 7 } ),
-
-	new MetaSurface( 'world', [
-		'SCAN.lit', 'SCAN.glow', 'SCAN.sparkle', 'SCAN.pointSize',
-		'SCAN.rampFloor', 'SCAN.rampCeil', 'SCAN.fogMix'
-	], { vertical: 7 } ),
-
-	new MetaSurface( 'feel', [
-		'ACC.intake', 'ACC.reach', 'ACC.swirl', 'ACC.viscosity', 'ACC.channelRate'
-	], { vertical: 9 } )
-];
+const surfaces = FOLDERS.map( name => new MetaSurface(
+	name.toLowerCase(), paramsIn( name ).map( q => q.path ), { vertical: 7 } ) );
 
 for ( const ms of surfaces ) mod.surface( ms );
 
@@ -232,7 +256,7 @@ const markers = new SurfaceMarkers( scene );
 // you flew through.
 const editor = {
 
-	surface: 'look',
+	surface: surfaces[ 0 ].name,
 	label: '',
 
 	capture() {
@@ -267,101 +291,6 @@ const editor = {
 	showMarkers: false
 
 };
-
-// --- cues -------------------------------------------------------------------
-//
-// A scene here has a lighting desk's semantics rather than a VJ bank's: absolute
-// levels, a fade-in time, a fade-out time, and a condition that fires it. Two
-// ramps rather than one is the whole point — a swell that decays at the speed it
-// arrived reads as a switch, and the interesting behaviour is all in the
-// asymmetry between how fast something arrives and how long it takes to let go.
-//
-// Triggers return 0..1 rather than true/false, and `all` is multiplicative, so
-// "firing near the pool" comes up half-way when you are half-way into the pool.
-// A cue is a gradient in two dimensions at once: how true its condition is, and
-// how far along its ramp it has got.
-
-mod
-	// The one asked for, more or less verbatim: hold the trigger anywhere near
-	// the water and the frame swells over a second and a half, then takes twice
-	// as long to let go of it.
-	.scene( 'channelling in the pool', {
-		when: WHEN.all( WHEN.state( 'channelling' ), WHEN.near( 'the pool' ) ),
-		enter: 1.5, exit: 3.4, hold: 0.4,
-		set: {
-			'HYDRA.saturate': 2.3,
-			'HYDRA.colorama': 0.075,
-			'HYDRA.kaleid': 8,
-			'HYDRA.feedback': 0.86,
-			'HYDRA.modRotateAmount': 0.16
-		}
-	} )
-
-	// Full and still carrying it. Slow in, very slow out — the look of being
-	// loaded should outlast the moment you stopped eating.
-	.scene( 'overloaded', {
-		when: WHEN.above( 'saturation', 0.8, 0.2 ),
-		enter: 2.6, exit: 6.0,
-		set: {
-			'HYDRA.selfModulate': 1.6,
-			'HYDRA.modAmount': 0.011,
-			'HYDRA.gain': 1.01,
-			'SCAN.glow': 1.9
-		}
-	} )
-
-	// A hit. One frame of trigger, held for a beat so the ramp can arrive at all,
-	// then a long release. This is the cue that most needs `hold` — without it the
-	// condition is false again before the fade is a tenth of the way up.
-	.scene( 'struck', {
-		when: WHEN.above( 'impact', 3.0, 2.0 ),
-		enter: 0.06, exit: 2.2, hold: 0.35, priority: 10,
-		set: {
-			'HYDRA.invert': 0.75,
-			'HYDRA.chromaSplit': 0.006,
-			'HYDRA.thresh': 0.30,
-			'HYDRA.rotate': - 0.09
-		}
-	} )
-
-	// Standing in ground you have destroyed, deep enough that it is not incidental.
-	// §48's failing-resolution register, fired by the only thing that should fire it.
-	.scene( 'in the ruin', {
-		when: WHEN.above( 'ruin', 0.55, 0.25 ),
-		enter: 1.8, exit: 4.5,
-		set: {
-			'HYDRA.pixelate': 220,
-			'HYDRA.posterize': 5,
-			'HYDRA.saturate': 0.45,
-			'HYDRA.colorama': 0.0,
-			'SCAN.sparkle': 0.8
-		}
-	} )
-
-	// Behind the partition, in the dark, with nothing in the disc. The resting
-	// look of the place you have not touched yet.
-	.scene( 'unlit and empty', {
-		when: WHEN.all( WHEN.near( 'behind the partition' ), WHEN.not( WHEN.above( 'saturation', 0.05, 0.1 ) ) ),
-		enter: 2.2, exit: 3.0,
-		set: {
-			'HYDRA.feedback': 0.44,
-			'HYDRA.thresh': 0.34,
-			'HYDRA.saturate': 0.6,
-			'SCAN.lit': 0.06,
-			'SCAN.glow': 1.9
-		}
-	} );
-
-// Cross-modulation. `via` makes a patch local — the same source drives a
-// different parameter, or none at all, depending on where you are — and because
-// every zone publishes its weight as a source, one region can drive a parameter
-// another region owns.
-mod
-	.route( 'speed', 'HYDRA.kaleid', 5, 'square', 'the piers' )
-	.route( 'impact', 'HYDRA.repeatY', 6, 'root', 'the piers' )
-	.addSource( 'poolDepth', st => st[ 'zone:the pool' ] || 0, { attack: 0.9, release: 1.8 } )
-	.route( 'poolDepth', 'HYDRA.fieldMix', 0.45 )
-	.route( 'poolDepth', 'SCAN.rampCeil', - 3.0 );
 
 // The panel and the patch bay write the same numbers, so a drag has to become
 // the new ground rather than being stamped over by the old one.
@@ -629,125 +558,310 @@ function governor( dt ) {
 const gui = new GUI( { title: 'APPARITION — feel test 01', width: 292 } );
 gui.domElement.style.zIndex = 30;
 
-const gFlight = gui.addFolder( 'Flight' );
-gFlight.add( TUNING, 'thrustScale', 0.02, 0.6, 0.005 ).name( 'thrust' );
-gFlight.add( TUNING, 'drag', 0.005, 0.12, 0.001 ).name( 'drag' );
-gFlight.add( TUNING, 'recoilMass', 10, 300, 5 ).name( 'recoil mass (kg)' );
-gFlight.add( TUNING, 'burnMultiplier', 1, 4, 0.05 ).name( 'burn x' );
-gFlight.add( TUNING, 'mouseSensitivity', 0.01, 2, 0.01 ).name( 'mouse' );
-gFlight.add( TUNING, 'rollThrustScale', 0.5, 5, 0.1 ).name( 'roll' );
-gFlight.add( TUNING, 'keyRotScale', 0.1, 4, 0.05 ).name( 'arrow-key rotation' );
-gFlight.add( TUNING, 'bankScale', 0, 0.2, 0.002 ).name( 'bank into turns' );
-gFlight.add( TUNING, 'bankMaxDeg', 0, 40, 1 ).name( 'bank limit (deg)' );
-gFlight.add( TUNING, 'wiggle', 0, 3, 0.05 ).name( 'wiggle' );
-gFlight.add( TUNING, 'autoLevel' ).name( 'auto-level' );
-gFlight.add( TUNING, 'autoLevelRate', 0, 3, 0.05 ).name( 'auto-level rate' );
-gFlight.add( TUNING, 'invertY' ).name( 'invert Y' );
+// --- the panel --------------------------------------------------------------
+//
+// Generated from params.js. The ranges used to be literals inside the gui.add()
+// calls, which meant the panel, the routable set and the modulation system each
+// held a private idea of what a parameter was; adding one meant editing three
+// places and remembering a fourth thing — the value past which it misbehaves —
+// that was written down nowhere at all. One table now, read by all three. A
+// parameter added there appears here, becomes routable, becomes placeable on a
+// metasurface and shows up in the readout, without this file learning anything
+// about it.
 
-const gCam = gui.addFolder( 'Camera (embodiment)' );
-gCam.add( TUNING, 'cameraLag', 0, 0.2, 0.002 ).name( 'position lag' );
-gCam.add( TUNING, 'cameraLagPerKg', 0, 0.01, 0.0002 ).name( 'lag per kg' );
-gCam.add( TUNING, 'rotationLag', 0, 0.2, 0.002 ).name( 'rotation lag' );
-gCam.add( TUNING, 'swayAmount', 0, 3, 0.05 ).name( 'sway' );
-gCam.add( camera, 'fov', 55, 110, 1 ).name( 'fov' ).onChange( () => camera.updateProjectionMatrix() );
+const gParam = {};
 
-const gAcc = gui.addFolder( 'Accretion (funnel)' );
-gAcc.add( ACC, 'reach', 2, 24, 0.5 ).name( 'reach (m)' );
-gAcc.add( ACC, 'mouthAngle', 0.1, 1.3, 0.01 ).name( 'mouth half-angle' );
-gAcc.add( ACC, 'horizon', 0.3, 4, 0.05 ).name( 'event horizon (m)' );
-gAcc.add( ACC, 'intake', 0, 500, 5 ).name( 'pull (m/s²)' );
-// Third law on the intake. At zero the funnel is a free force; at one, hauling
-// on a bench hauls back and the funnel doubles as a movement system.
-gAcc.add( ACC, 'reaction', 0, 2, 0.05 ).name( 'reaction (§3.4)' );
-gAcc.add( ACC, 'reactionCeiling', 0, 4000, 50 ).name( 'reaction cap (N)' );
-gAcc.add( ACC, 'swirl', 0, 0.95, 0.01 ).name( 'swirl' );
-// Turn this to zero and the funnel becomes a merry-go-round: swirl with no
-// viscosity conserves angular momentum exactly and nothing ever falls in.
-gAcc.add( ACC, 'viscosity', 0, 12, 0.1 ).name( 'viscosity (1/s)' );
-// The one slider that is not about feel so much as tolerance: a funnel that
-// tracks the camera exactly is a cursor, and a funnel that lags is a third
-// motion vector on top of §47.6's two.
-gAcc.add( ACC, 'axisLag', 0, 0.5, 0.005 ).name( 'axis lag (s)' );
-gAcc.add( ACC, 'freeSpeed', 1, 30, 0.5 ).name( 'free speed (§10.2)' );
-gAcc.add( ACC, 'capacity', 100, 4000, 25 ).name( 'capacity (kg)' );
-gAcc.add( ACC, 'fireSpeed', 5, 140, 1 ).name( 'muzzle (m/s)' );
-gAcc.add( ACC, 'channelRate', 2, 200, 1 ).name( 'kg/s channelled' );
-gAcc.add( ACC, 'streamDensity', 0.1, 4, 0.05 ).name( 'stream density' );
-gAcc.add( ACC, 'channelSpread', 0, 0.6, 0.01 ).name( 'jet spread' );
-gAcc.add( ACC, 'jetSwirl', 0, 1, 0.01 ).name( 'jet swirl' );
-// The visible corkscrew. Costs nothing and, unlike real tangential speed,
-// does not walk the stream off whatever you are pointing at.
-gAcc.add( ACC, 'jetTwist', 0, 120, 1 ).name( 'jet twist (rad/s)' );
-gAcc.add( ACC, 'discOffset', 0, 6, 0.05 ).name( 'disc distance' );
-gAcc.add( ACC, 'discRadius', 0.4, 5, 0.05 ).name( 'disc radius' );
-gAcc.add( ACC, 'discSpin', 0, 16, 0.1 ).name( 'disc spin' );
-gAcc.add( ACC, 'discShards', 0, 1600, 10 ).name( 'disc shards' );
-gAcc.add( ACC, 'carryWattsPerKg', 0, 0.2, 0.002 ).name( 'W per kg carried' );
-gAcc.add( ACC, 'intakeWattsPerKg', 0, 0.6, 0.005 ).name( 'W per kg·a' );
-gAcc.add( accretion, 'selected', {
+for ( const name of FOLDERS ) {
+
+	const f = gui.addFolder( name );
+	gParam[ name ] = f;
+
+	for ( const q of paramsIn( name ) ) {
+
+		const t = mod.resolve( q.path );
+		if ( ! t ) continue;
+
+		// A hand-drag has to become the new ground. Modulation is an offset from
+		// the panel, so without this the base captured before the drag keeps being
+		// restored underneath and the slider appears to spring back. The dragged
+		// value is passed rather than re-read, so a route that is up at the time
+		// does not get folded into it.
+		f.add( t.obj, t.key, q.min, q.max, q.step ).name( q.label )
+			.onChange( v => mod.setBase( q.path, v ) );
+
+	}
+
+}
+
+// The things that are not a number with a range, hung on the folder they belong
+// to rather than given one of their own.
+
+gParam.Hydra.add( HYDRA, 'enabled' ).name( 'loop on' )
+	.onChange( v => { if ( ! v ) post.hydraChain.clear(); } );
+
+gParam.Scan.add( VIEW, 'mode', [ 'mesh', 'scan', 'both' ] ).name( 'world' ).onChange( applyView );
+// Deliberately not in the table. The quality governor steps this down under
+// load, and a route and an automatic governor fighting over one number is a bug
+// with no owner.
+gParam.Scan.add( SCAN, 'lod', 0.05, 1, 0.01 ).name( 'density (LOD)' ).listen()
+	.onChange( v => scan.setLod( v ) );
+
+gParam.Accretion.add( accretion, 'selected', {
 	tile: MATERIAL_KIND.TILE, concrete: MATERIAL_KIND.CONCRETE,
 	glass: MATERIAL_KIND.GLASS, steel: MATERIAL_KIND.STEEL
 } ).name( 'firing (wheel)' ).listen();
 
-const gScan = gui.addFolder( 'Scan (point-cloud world)' );
-gScan.add( VIEW, 'mode', [ 'mesh', 'scan', 'both' ] ).name( 'world' ).onChange( applyView );
-gScan.add( SCAN, 'lod', 0.05, 1, 0.01 ).name( 'density (LOD)' ).listen()
-	.onChange( v => scan.setLod( v ) );
-gScan.add( SCAN, 'breachAt', 0.02, 0.9, 0.01 ).name( 'breach threshold' );
-gScan.add( SCAN, 'pointSize', 0.5, 8, 0.1 ).name( 'point size (px @ 1m)' );
-gScan.add( SCAN, 'sizeFalloff', 0, 1.2, 0.02 ).name( 'size falloff' );
-gScan.add( SCAN, 'maxPixels', 1, 12, 0.5 ).name( 'max px' );
-// Zero is a pure LIDAR diagram, one is the room's own lighting rig on a point
-// set. The interesting settings are between, and that is the actual question
-// this overlay exists to answer.
-gScan.add( SCAN, 'lit', 0, 1, 0.02 ).name( 'ramp <-> rig' );
-gScan.add( SCAN, 'glow', 0, 3, 0.05 ).name( 'return glow' );
-gScan.add( SCAN, 'fogMix', 0, 1, 0.02 ).name( 'atmosphere on scan' );
-gScan.add( SCAN, 'sparkle', 0, 1, 0.02 ).name( 'shimmer' );
-gScan.add( SCAN, 'rampFloor', - 4, 4, 0.1 ).name( 'ramp floor (m)' );
-gScan.add( SCAN, 'rampCeil', 2, 14, 0.1 ).name( 'ramp ceiling (m)' );
-gScan.add( SCAN, 'loosen', 0, 2, 0.02 ).name( 'loosen before drop' );
+gParam.Flight.add( TUNING, 'autoLevel' ).name( 'auto-level' );
+gParam.Flight.add( TUNING, 'invertY' ).name( 'invert Y' );
+gParam.Flight.add( camera, 'fov', 55, 110, 1 ).name( 'fov' )
+	.onChange( () => camera.updateProjectionMatrix() );
 
-const gHydra = gui.addFolder( 'Hydra (feedback)' );
-gHydra.add( HYDRA, 'enabled' ).name( 'loop on' )
-	.onChange( v => { if ( ! v ) post.hydraChain.clear(); } );
-// The two that decide whether the loop settles, breathes, or runs away. Above
-// about 0.97 feedback with any live injection it never decays and the frame
-// fills; hydra's own sketches live right on that edge on purpose.
-gHydra.add( HYDRA, 'feedback', 0, 0.995, 0.005 ).name( 'src(o0) survives' );
-gHydra.add( HYDRA, 'live', 0, 1.5, 0.02 ).name( 'live injection' );
-gHydra.add( HYDRA, 'decay', 0, 0.05, 0.001 ).name( 'bleed to black' );
-gHydra.add( HYDRA, 'modAmount', 0, 0.06, 0.0005 ).name( 'modulate' );
-gHydra.add( HYDRA, 'modScale', 0.2, 14, 0.1 ).name( 'modulate scale' );
-gHydra.add( HYDRA, 'modSpeed', 0, 2, 0.01 ).name( 'modulate speed' );
-gHydra.add( HYDRA, 'selfModulate', 0, 3, 0.05 ).name( 'self-modulate' );
-gHydra.add( HYDRA, 'fieldMix', 0, 1, 0.02 ).name( 'osc <-> voronoi' );
-gHydra.add( HYDRA, 'modScaleAmount', - 0.1, 0.1, 0.002 ).name( 'modulateScale' );
-gHydra.add( HYDRA, 'modRotateAmount', - 0.4, 0.4, 0.005 ).name( 'modulateRotate' );
-// The biggest single lever in the file. Zero is off; three and up folds the tap
-// into that many mirrored wedges and a smear becomes a bloom.
-gHydra.add( HYDRA, 'kaleid', 0, 16, 1 ).name( 'kaleid (sides)' );
-gHydra.add( HYDRA, 'repeatX', 0, 12, 1 ).name( 'repeat x' );
-gHydra.add( HYDRA, 'repeatY', 0, 12, 1 ).name( 'repeat y' );
-gHydra.add( HYDRA, 'pixelate', 0, 400, 2 ).name( 'pixelate' );
-gHydra.add( HYDRA, 'posterize', 0, 24, 1 ).name( 'posterize' );
-gHydra.add( HYDRA, 'thresh', 0, 1, 0.01 ).name( 'thresh' );
-gHydra.add( HYDRA, 'invert', 0, 1, 0.02 ).name( 'invert' );
-gHydra.add( HYDRA, 'rotate', - 0.4, 0.4, 0.005 ).name( 'rotate / pass' );
-gHydra.add( HYDRA, 'zoom', 0.97, 1.03, 0.001 ).name( 'zoom / pass' );
-gHydra.add( HYDRA, 'colorama', - 0.15, 0.15, 0.002 ).name( 'colorama' );
-gHydra.add( HYDRA, 'saturate', 0, 3, 0.02 ).name( 'saturate' );
-gHydra.add( HYDRA, 'chromaSplit', 0, 0.01, 0.0002 ).name( 'chroma split' );
-gHydra.add( HYDRA, 'gain', 0.8, 1.3, 0.01 ).name( 'gain' );
-// The part that is not a screen filter: the geometry reading the loop back.
-gHydra.add( HYDRA, 'worldDisplace', 0, 3, 0.02 ).name( 'world displace (m)' );
-gHydra.add( HYDRA, 'worldTint', 0, 2, 0.02 ).name( 'world tint' );
+// --- the readout ------------------------------------------------------------
+//
+// The instrument, and the whole answer to "something in here creates runaway
+// feedback and I cannot find it". A sum you can only see the result of is a sum
+// you cannot debug: three numbers adding to 1.11 look exactly like one number
+// that is 1.11. So every destination anything writes prints its base, every
+// contribution by name, and the total that actually landed.
+//
+// Nothing here prevents anything. Reaching a runaway on purpose is a legitimate
+// thing to want — hydra's own sketches live on that edge — so the readout says
+// where the edge is and then gets out of the way.
+
+const patchEl = document.getElementById( 'patch' );
+// `all` prints every destination anything could write; off, it prints only the
+// ones being moved right now plus anything past a known threshold. Ninety-five
+// parameters is four screens of mostly "base, and nothing happened", and a
+// readout you have to scroll past to find the live row is one you stop opening.
+const readout = { show: false, all: false, rate: 8, lines: 40 };
+let readoutClock = 0;
+
+// The budget is in lines, not entries: an entry is anything from three lines to
+// nine depending on how many routes land on it, so a cap counted in entries
+// either wastes two thirds of the panel or runs off the bottom of the screen.
+// The element clips rather than scrolls — it has pointer-events: none, so a
+// scrollbar on it would be decorative.
+//
+// Measured against the debug readout above it rather than against the viewport,
+// because that one grows and shrinks: a panel goes from intact to breached, the
+// funnel starts channelling, the pause line appears. A fixed fraction of the
+// screen is right until one of those happens and then the two overlap.
+const LINE_PX = 16.5;
+
+function fitReadout() {
+
+	const above = hud.el.getBoundingClientRect().bottom;
+	readout.lines = Math.max( 10, Math.floor( ( innerHeight - above - 28 ) / LINE_PX ) );
+
+}
+
+const pad = ( s, n ) => s + ' '.repeat( Math.max( 0, n - s.length ) );
+
+function fmt( v ) {
+
+	const a = Math.abs( v );
+	return a >= 100 ? v.toFixed( 0 ) : a >= 1 ? v.toFixed( 3 ) : v.toFixed( 4 );
+
+}
+
+function drawReadout() {
+
+	fitReadout();
+	const rows = [];
+
+	// The loop-stability line first, because it is the one that eats the room. A
+	// screen-blend feedback chain is contractive only while what survives a pass
+	// times the gain applied to it stays under one. Above that every pass
+	// multiplies, and at the numbers this build ships with that is about two
+	// seconds from a lit room to a white one.
+	const loop = HYDRA.feedback * HYDRA.gain;
+	rows.push( loop >= 1
+		? `<span class="warn">feedback x gain  ${fmt( loop )}   LOOP GROWS EVERY PASS</span>`
+		: `feedback x gain  <b>${fmt( loop )}</b>   <u>contracting</u>` );
+	rows.push( '' );
+
+	// Which sources are awake, on one line. Half of reading a breakdown is knowing
+	// whether the thing feeding it is even up.
+	const live = mod.active( 0.02 );
+	rows.push( live.length
+		? `sources          ${live.slice( 0, 7 ).map( s => `<i>${s.name}</i> ${( s.value * 100 ).toFixed( 0 )}` ).join( '  ' )}`
+		: '<u>sources          all at rest</u>' );
+	rows.push( '' );
+
+	// Sorted by how far each destination has been pushed off its base, so the
+	// thing doing the most is at the top rather than wherever the alphabet put it.
+	const entries = mod.written().map( path => mod.explain( path ) );
+	entries.forEach( e => {
+
+		e._warn = warnLevel( e.path );
+		e._hot = e._warn !== null && e.total > e._warn;
+		e._moved = Math.abs( e.total - e.base ) > 1e-9 || !! e.surface;
+
+	} );
+
+	entries.sort( ( a, b ) => ( b._hot - a._hot ) ||
+		( Math.abs( b.total - b.base ) - Math.abs( a.total - a.base ) ) ||
+		a.path.localeCompare( b.path ) );
+
+	const shown = readout.all ? entries : entries.filter( e => e._moved || e._hot );
+	const quiet = entries.length - shown.length;
+
+	if ( ! entries.length ) rows.push( '<u>nothing routed — the sliders are the only thing writing</u>' );
+	else if ( ! shown.length ) rows.push( `<u>${entries.length} destinations patched, none moving</u>` );
+
+	let printed = 0;
+
+	for ( const e of shown ) {
+
+		const block = [ `<b>${e.path}</b>`, `  ${pad( 'base', 20 )} ${fmt( e.base )}` ];
+
+		// A surface is absolute rather than additive, so it does not appear as a
+		// term — it replaces the base before anything is added to it. Naming it is
+		// the difference between "this is not what the slider says" and "this is
+		// not what the slider says, and here is what owns it".
+		if ( e.surface ) block.push( `  ${pad( `surface ${e.surface}`, 20 )} <i>absolute, replaces base</i>` );
+
+		for ( const c of e.contributions ) {
+
+			const tag = c.curve === 'linear' ? c.from : `${c.from} ${c.curve}`;
+			block.push( `  <i>${pad( tag, 20 )}</i> ${c.value >= 0 ? '+' : '-'} ${fmt( Math.abs( c.value ) )}` );
+
+		}
+
+		block.push( e._hot
+			? `  <span class="warn">${pad( '=', 20 )} ${fmt( e.total )}   past ${e._warn}</span>`
+			: `  ${pad( '=', 20 )} <b>${fmt( e.total )}</b>` );
+		block.push( '' );
+
+		// Two lines held back for the tallies, so the thing that tells you it was
+		// truncated is never itself the thing that gets truncated.
+		if ( rows.length + block.length > readout.lines - 2 ) break;
+
+		rows.push( ...block );
+		printed ++;
+
+	}
+
+	// Never silently truncate. A readout showing nine of thirty and saying nothing
+	// reads exactly like a readout showing everything.
+	if ( printed < shown.length ) rows.push( `<u>+ ${shown.length - printed} more moving, off the bottom</u>` );
+	if ( quiet > 0 ) rows.push( `<u>+ ${quiet} patched and resting  —  "all" in the panel shows them</u>` );
+
+	patchEl.innerHTML = rows.join( '\n' );
+
+}
+
+// --- the patch bay ----------------------------------------------------------
 
 const gMod = gui.addFolder( 'Patch bay' );
 gMod.add( mod, 'enabled' ).name( 'modulation on' );
-// Any hand-drag has to become the new ground, or the captured base from before
-// the drag keeps being restored underneath and the slider appears to snap back.
-gMod.add( { rebase() { mod.rebase(); } }, 'rebase' ).name( 'take sliders as base' );
+// Sliders rebase themselves as they are dragged. This is for values set from
+// somewhere else — the console, a pasted tuning export — and it backs the live
+// routes out of the numbers before adopting them, so calling it twice does the
+// same thing as calling it once.
+gMod.add( { rebase() { mod.rebase(); } }, 'rebase' ).name( 'adopt live values as base' );
+gMod.add( readout, 'show' ).name( 'readout (M)' ).listen()
+	.onChange( v => patchEl.classList.toggle( 'show', v ) );
+gMod.add( readout, 'all' ).name( 'readout: all, not just moving' );
+gMod.add( readout, 'rate', 1, 30, 1 ).name( 'readout refresh (Hz)' );
+
+// Sources. The one part that has to live in code, because each of them reads
+// something out of the world — but their shaping does not, so the two time
+// constants and the scale are on the panel with everything else. A hit is two
+// frames long and a raw route off it clicks; the release is what makes it an
+// event.
+const gSources = gMod.addFolder( 'sources' );
+
+for ( const s of mod.sources.values() ) {
+
+	const f = gSources.addFolder( s.name );
+	f.add( s, 'value', 0, 1 ).name( 'now' ).listen().disable();
+	f.add( s, 'attack', 0, 3, 0.01 ).name( 'attack (s)' );
+	f.add( s, 'release', 0, 8, 0.05 ).name( 'release (s)' );
+	f.add( s, 'scale', 0.05, 8, 0.05 ).name( 'scale' );
+	f.close();
+
+}
+
+gSources.close();
+
+// Routes. Any registered source, to any parameter in the table, with an amount
+// in the destination's own units and a curve between them. Made here rather
+// than in source, because whoever makes one has to be able to see what it does.
+const gRoutes = gMod.addFolder( 'routes' );
+
+const SOURCE_NAMES = [ ...mod.sources.keys() ];
+const DEST_PATHS = PARAMS.map( q => q.path );
+
+const patch = {
+	from: SOURCE_NAMES[ 0 ],
+	to: DEST_PATHS[ 0 ],
+	amount: 0,
+	curve: 'linear',
+	patch() { addRouteGui( mod.route( patch.from, patch.to, patch.amount, patch.curve ) ); },
+	unpatchAll() { while ( mod.routes.length ) mod.unroute( mod.routes[ 0 ] ); rebuildRouteGui(); }
+};
+
+const gNew = gRoutes.addFolder( 'patch a new one' );
+gNew.add( patch, 'from', SOURCE_NAMES ).name( 'source' );
+gNew.add( patch, 'to', DEST_PATHS ).name( 'destination' ).onChange( fitAmount );
+const cAmount = gNew.add( patch, 'amount', - 1, 1, 0.01 ).name( 'amount at full' );
+gNew.add( patch, 'curve', Object.keys( CURVES ) ).name( 'curve' );
+gNew.add( patch, 'patch' ).name( 'PATCH IT' );
+
+// The amount is in the destination's own units, so the slider has to take the
+// destination's own span. A range of +/-1 means nothing against kaleid, which
+// counts sides, and is the entire useful range and then some against
+// chromaSplit, which lives near a thousandth.
+function fitAmount() {
+
+	const q = BY_PATH.get( patch.to );
+	if ( ! q ) return;
+	const span = q.max - q.min;
+	patch.amount = Math.max( - span, Math.min( span, patch.amount ) );
+	cAmount.min( - span ).max( span ).step( q.step ).updateDisplay();
+
+}
+
+fitAmount();
+
+// One folder per live route. `writing now` is the important row: a route whose
+// contribution you can watch move is a route you can rule in or out in a second
+// rather than by deleting it and reloading.
+const _routeFolders = [];
+
+function addRouteGui( r ) {
+
+	const q = BY_PATH.get( r.to );
+	const span = q ? q.max - q.min : Math.abs( r.amount ) * 4 + 1e-3;
+
+	const f = gRoutes.addFolder( `${r.from} -> ${r.to}` );
+	f.add( r, 'on' ).name( 'on' );
+	f.add( r, 'amount', - span, span, q ? q.step : span / 200 ).name( 'amount at full' );
+	f.add( r, 'curve', Object.keys( CURVES ) ).name( 'curve' );
+	f.add( r, 'contribution' ).name( 'writing now' ).listen().disable();
+	f.add( { unpatch() { mod.unroute( r ); f.destroy(); } }, 'unpatch' ).name( 'unpatch' );
+	f.close();
+	_routeFolders.push( f );
+	return r;
+
+}
+
+function rebuildRouteGui() {
+
+	for ( const f of _routeFolders ) f.destroy();
+	_routeFolders.length = 0;
+	for ( const r of mod.routes ) addRouteGui( r );
+
+}
+
+gRoutes.add( patch, 'unpatchAll' ).name( 'unpatch everything' );
+
+// The starting patch, given the same folder treatment as anything patched by
+// hand. There is nothing privileged about a route that came from source.
+rebuildRouteGui();
+
+// --- metasurfaces on the panel ----------------------------------------------
 
 const gSurf = gMod.addFolder( 'metasurfaces' );
 gSurf.add( editor, 'surface', surfaces.map( s => s.name ) ).name( 'editing' );
@@ -795,62 +909,7 @@ function rebuildPresetGui() {
 
 rebuildPresetGui();
 gPresets.close();
-
-const gScenes = gMod.addFolder( 'scenes (cues)' );
-for ( const sc of mod.scenes ) {
-
-	const f = gScenes.addFolder( sc.name );
-	f.add( sc, 'on' ).name( 'armed' );
-	f.add( sc, 'enter', 0.02, 10, 0.02 ).name( 'fade in (s)' );
-	f.add( sc, 'exit', 0.02, 20, 0.05 ).name( 'fade out (s)' );
-	f.add( sc, 'hold', 0, 4, 0.05 ).name( 'hold (s)' );
-	f.add( sc, 'weight', 0, 1 ).name( 'level' ).listen().disable();
-	f.close();
-
-}
-
-const gRoutes = gMod.addFolder( 'routes' );
-for ( const r of mod.routes ) {
-
-	const f = gRoutes.addFolder( `${r.from} -> ${r.to.split( '.' )[ 1 ]}` );
-	f.add( r, 'on' ).name( 'on' );
-	f.add( r, 'amount', - Math.abs( r.amount ) * 4 - 0.001, Math.abs( r.amount ) * 4 + 0.001 ).name( 'amount' );
-	f.add( r, 'curve', Object.keys( CURVES ) ).name( 'curve' );
-	f.add( { via: r.via || '(everywhere)' }, 'via' ).name( 'only in' ).disable();
-	f.close();
-
-}
-gRoutes.close();
-
-const gZones = gMod.addFolder( 'zones' );
-for ( const z of mod.zones ) {
-
-	const f = gZones.addFolder( z.name );
-	f.add( z, 'on' ).name( 'on' );
-	f.add( z, 'radius', 0.5, 20, 0.5 ).name( 'radius' );
-	f.add( z, 'feather', 0, 15, 0.5 ).name( 'feather' );
-	f.close();
-
-}
-gZones.close();
-
-const gShred = gui.addFolder( 'Shards' );
-// Stretch is the whole look. At zero these are specks; the streak is what makes
-// fast debris read as sharp rather than as boxes drifting past.
-gShred.add( SHRED, 'stretch', 0, 0.08, 0.001 ).name( 'stretch (m per m/s)' )
-	.onChange( v => { shred.uniforms.uStretch.value = v; } );
-gShred.add( SHRED, 'maxLength', 0.05, 2, 0.01 ).name( 'max length' )
-	.onChange( v => { shred.uniforms.uMaxLength.value = v; } );
-gShred.add( SHRED, 'width', 0.002, 0.14, 0.001 ).name( 'width' )
-	.onChange( v => { shred.uniforms.uWidth.value = v; } );
-// The screen-space floor. Drop it to zero and the field vanishes at range even
-// while the readout says a thousand shards a second are leaving.
-gShred.add( SHRED, 'minAngular', 0, 0.012, 0.0002 ).name( 'min angular width' )
-	.onChange( v => { shred.uniforms.uMinAngular.value = v; } );
-gShred.add( SHRED, 'drag', 0, 4, 0.05 ).name( 'drag (1/s)' );
-gShred.add( SHRED, 'lifeMax', 0.3, 8, 0.1 ).name( 'life (s)' );
-gShred.add( SHRED, 'strikeScale', 0, 0.3, 0.005 ).name( 'cut rate' );
-gShred.add( SHRED, 'bounce', 0, 0.9, 0.02 ).name( 'bounce' );
+gSurf.close();
 
 const gPhys = gui.addFolder( 'Solver (AVBD)' );
 gPhys.add( solver, 'iterations', 1, 12, 1 ).name( 'iterations' );
@@ -902,15 +961,9 @@ gLook.addColor( { c: '#0a141b' }, 'c' ).name( 'fog colour' )
 	.onChange( v => rig.uniforms.uFogColor.value.set( v ) );
 gLook.addColor( { c: '#0a1218' }, 'c' ).name( 'ambient' )
 	.onChange( v => rig.uniforms.uAmbient.value.set( v ) );
-gLook.add( POST, 'bloomStrength', 0, 2, 0.01 ).name( 'bloom' );
-gLook.add( POST, 'bloomThreshold', 0, 1.5, 0.01 ).name( 'bloom threshold' )
-	.onChange( v => post.bloom.threshold = v );
-gLook.add( POST, 'bloomRadius', 0, 1.5, 0.01 ).name( 'bloom radius' )
-	.onChange( v => post.bloom.radius = v );
-gLook.add( POST, 'grain', 0, 0.2, 0.002 ).name( 'grain' );
-gLook.add( POST, 'vignette', 0, 1.5, 0.01 ).name( 'vignette' );
-gLook.add( POST, 'scanline', 0, 0.12, 0.002 ).name( 'scanline' );
-gLook.add( POST, 'exposure', 0.2, 3, 0.02 ).name( 'exposure' );
+// The post grade lives in the generated Post folder — it is in the parameter
+// table, so it is routable, and duplicating it here would be a second slider
+// writing the same number with a different range.
 
 const gPerf = gui.addFolder( 'Performance' );
 gPerf.add( quality, 'auto' ).name( 'auto governor' );
@@ -927,41 +980,74 @@ gPerf.add( { gpu: quality.gpu }, 'gpu' ).name( 'gpu' ).disable();
 // output is the diff between the build and what you actually dialled, in a form
 // that can go straight back into source.
 
-const TUNE_GROUPS = [
-	[ 'TUNING', TUNING, [ 'thrustScale', 'burnMultiplier', 'drag', 'recoilMass', 'wiggle',
-		'mouseSensitivity', 'rollThrustScale', 'keyRotScale', 'invertY',
-		'autoLevel', 'autoLevelRate',
-		'cameraLag', 'cameraLagPerKg', 'cameraLagMax', 'rotationLag', 'swayAmount' ] ],
-	[ 'ACC', ACC, [ 'reach', 'mouthAngle', 'horizon', 'intake', 'reaction', 'reactionCeiling',
-		'swirl', 'viscosity', 'axisLag',
-		'freeSpeed', 'capacity', 'fireSpeed', 'channelRate', 'streamDensity', 'channelSpread', 'jetSwirl', 'jetTwist',
-		'discOffset', 'discRadius', 'discSpin', 'discShards',
-		'carryWattsPerKg', 'intakeWattsPerKg' ] ],
-	[ 'SHRED', SHRED, [ 'stretch', 'minLength', 'maxLength', 'width', 'minAngular',
-		'drag', 'lifeMin', 'lifeMax', 'bounce', 'strikeScale' ] ],
+// Everything in the parameter table, plus the handful of tunables that are not
+// in it because they are not a number with a range — booleans, solver internals,
+// the odd derived constant. The table half used to be a duplicate list, which
+// meant a parameter added to params.js appeared on the panel, became routable and
+// placeable, and then quietly did not survive a tuning export. Same table, so it
+// cannot drift.
+const TUNE_EXTRA = [
+	[ 'TUNING', TUNING, [ 'invertY', 'autoLevel', 'cameraLagMax' ] ],
+	[ 'SHRED', SHRED, [ 'minLength', 'lifeMin' ] ],
+	[ 'HYDRA', HYDRA, [ 'enabled' ] ],
 	[ 'solver', solver, [ 'iterations', 'beta', 'alpha', 'gamma', 'postStabilize',
 		'sleepTime', 'gravity', 'maxSubsteps', 'maxTravel', 'creepRate' ] ],
-	[ 'HYDRA', HYDRA, [ 'feedback', 'live', 'decay', 'modAmount', 'modScale', 'modSpeed',
-		'selfModulate', 'fieldMix', 'modScaleAmount', 'modRotateAmount',
-		'kaleid', 'repeatX', 'repeatY', 'rotate', 'zoom',
-		'colorama', 'saturate', 'chromaSplit', 'pixelate', 'posterize', 'thresh',
-		'invert', 'gain', 'worldDisplace', 'worldTint' ] ],
-	[ 'POST', POST, [ 'bloomStrength', 'bloomThreshold', 'bloomRadius',
-		'grain', 'vignette', 'scanline', 'exposure' ] ],
 	[ 'dust', dust, [ 'densityDecay' ] ]
 ];
+
+const TUNE_GROUPS = ( () => {
+
+	const byNamespace = new Map();
+
+	for ( const q of PARAMS ) {
+
+		const dot = q.path.indexOf( '.' );
+		const ns = q.path.slice( 0, dot );
+		if ( ! byNamespace.has( ns ) ) byNamespace.set( ns, [] );
+		byNamespace.get( ns ).push( q.path.slice( dot + 1 ) );
+
+	}
+
+	const groups = [];
+
+	for ( const [ ns, keys ] of byNamespace ) {
+
+		const extra = TUNE_EXTRA.find( g => g[ 0 ] === ns );
+		groups.push( [ ns, mod.targets[ ns ], extra ? keys.concat( extra[ 2 ] ) : keys ] );
+
+	}
+
+	// Anything with no entry in the table at all.
+	for ( const g of TUNE_EXTRA ) if ( ! byNamespace.has( g[ 0 ] ) ) groups.push( g );
+
+	return groups;
+
+} )();
 
 const TUNE_UNIFORMS = [ 'uFogDensity', 'uFogHeightFalloff', 'uVolumetricGain',
 	'uCausticStrength', 'uCausticScale', 'uFogColor', 'uAmbient',
 	'uWarpAmount', 'uWarpScale', 'uShockThickness' ];
 
+// The base, not the live value, for anything the patch bay is writing. The two
+// used to be the same number; now a route lands on the object the export reads,
+// so exporting mid-flight would bake whatever the modulation happened to be
+// doing at that instant into a line of source claiming to be a default. The
+// metasurface capture already reads the base for exactly this reason — a preset
+// describes a place, a tuning export describes a build, and neither describes a
+// moment.
 function readTuning() {
 
 	const out = [];
+	const written = new Set( mod.written() );
 
 	for ( const [ label, obj, keys ] of TUNE_GROUPS ) {
 
-		for ( const k of keys ) out.push( [ `${label}.${k}`, obj[ k ] ] );
+		for ( const k of keys ) {
+
+			const path = `${label}.${k}`;
+			out.push( [ path, written.has( path ) ? mod.base( path ) : obj[ k ] ] );
+
+		}
 
 	}
 
@@ -1086,24 +1172,18 @@ gui.add( actions, 'clearDebris' ).name( 'clear debris' );
 gui.add( actions, 'healScan' ).name( 'heal the scan' );
 gui.add( actions, 'relight' ).name( 'restore lighting' );
 
-// Open, with the lighting folder expanded and the rest collapsed. Lighting is
-// the thing you actually want to watch change while you drag it, and a panel you
-// have to go find is a panel nobody opens.
-gFlight.close();
-gCam.close();
-gScan.close();
-gHydra.close();
+// Everything generated starts collapsed — six folders of sliders opened at once
+// is a wall, not an instrument. The patch bay is the exception because it is the
+// thing this build is currently about.
+for ( const name of FOLDERS ) gParam[ name ].close();
 gMod.open();
-gShred.close();
+gRoutes.open();
 gPhys.close();
 gJoint.close();
 gWarp.close();
 gDust.close();
 gPerf.close();
-gLook.open();
-// The funnel is what this build exists to test, so it starts open next to the
-// lighting rather than one click away.
-gAcc.open();
+gLook.close();
 let guiOpen = true;
 
 addEventListener( 'keydown', e => {
@@ -1113,6 +1193,15 @@ addEventListener( 'keydown', e => {
 		e.preventDefault();
 		guiOpen = ! guiOpen;
 		guiOpen ? gui.open() : gui.close();
+
+	}
+
+	// The readout. A key as well as a checkbox because it is the thing you want
+	// while both hands are on the controls and something has just gone wrong.
+	if ( e.code === 'KeyM' && ! e.metaKey && ! e.ctrlKey ) {
+
+		readout.show = ! readout.show;
+		patchEl.classList.toggle( 'show', readout.show );
 
 	}
 
@@ -1252,6 +1341,16 @@ function frame() {
 	mod.update( modState, dt );
 	if ( editor.showMarkers ) markers.update( surfaces );
 
+	// Throttled. The breakdown itself is free — the matrix keeps last frame's
+	// contributions by name — but rebuilding a few hundred lines of DOM sixty
+	// times a second would make the instrument the thing worth measuring.
+	if ( readout.show ) {
+
+		readoutClock += dt;
+		if ( readoutClock >= 1 / readout.rate ) { readoutClock = 0; drawReadout(); }
+
+	}
+
 	post.update( dt, elapsed, { watts: accretion.watts, heat: accretion.heat, dilation } );
 
 	// Hand the world last frame's composite before drawing this one, along with
@@ -1295,10 +1394,8 @@ function frame() {
 		consumed: accretion.consumed,
 		stalled: accretion.stalled,
 		mods: mod.enabled ? mod.active( 0.04 ).slice( 0, 4 ).map( m => `${m.name} ${( m.value * 100 ).toFixed( 0 )}` ) : [],
-		cues: mod.activeScenes( 0.02 ).map( c => `${c.name} ${( c.weight * 100 ).toFixed( 0 )}` ),
 		surfaces: surfaces.flatMap( s => s.influences( 0.03 ).slice( 0, 3 )
 			.map( i => `${i.preset.label} ${( i.weight * 100 ).toFixed( 0 )}` ) ),
-		zone: mod.activeZones().map( z => z.name ).join( ' + ' ),
 		scanMode: VIEW.mode,
 		scanPoints: scan.drawn,
 		scanEroded: scan.eroded,
@@ -1327,4 +1424,10 @@ frame();
 
 // Exposed for console poking during tuning.
 window.APPARITION = { solver, rig, flight, accretion, destruction, debris, dust, shred, scan, panels, quality, post,
-	TUNING, ACC, POST, SHRED, SCAN, HYDRA, VIEW, mod, surfaces, editor, applyView, copyTuning, readTuning, formatTuning };
+	TUNING, ACC, POST, SHRED, SCAN, HYDRA, VIEW, mod, surfaces, editor, applyView, copyTuning, readTuning, formatTuning,
+	// Patching from the console, for when a folder is faster to type than to find.
+	// `patch( 'speed', 'HYDRA.kaleid', 5, 'square' )` appears in the panel like any
+	// other route, and `explain( 'HYDRA.feedback' )` is the readout for one path.
+	PARAMS, CURVES,
+	patch: ( from, to, amount, curve ) => addRouteGui( mod.route( from, to, amount, curve ) ),
+	explain: path => mod.explain( path ) };

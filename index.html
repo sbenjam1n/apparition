@@ -40,6 +40,24 @@
 		}
 		#gate.hidden { display: none; }
 
+		/* The patch readout. A runaway that can only be watched is a runaway that
+		   cannot be found, so every destination anything writes shows its base, its
+		   contributions by name, and the sum that actually landed. */
+		/* Bottom left, opposite the tuning panel. The panel is 300px of sliders on
+		   the right at a higher stacking order, so anything sharing that edge is a
+		   readout you cannot read. */
+		#patch {
+			position: fixed; left: 14px; bottom: 12px; z-index: 10;
+			max-height: 74vh; overflow: hidden; white-space: pre;
+			pointer-events: none; text-shadow: 0 0 8px rgba(0,0,0,.9);
+			letter-spacing: .03em; opacity: .92; display: none;
+		}
+		#patch.show { display: block; }
+		#patch b { color: #cfe8f5; font-weight: 400; }
+		#patch i { font-style: normal; color: #7ef4d2; }
+		#patch u { text-decoration: none; color: #6d8496; }
+		#patch .warn { color: #ffb35c; }
+
 		#toast {
 			position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%);
 			z-index: 40; padding: 7px 14px; border: 1px solid #2b3d4a; border-radius: 4px;
@@ -75,6 +93,7 @@
 </head>
 <body>
 	<div id="hud"></div>
+	<div id="patch"></div>
 	<div id="reticle"></div>
 	<div id="toast"></div>
 
@@ -98,6 +117,8 @@
 				<i>alt + wheel</i><span>time dilation</span>
 				<i>F</i><span>probe — reads mass and weakness</span>
 				<i>R</i><span>vent — dump the load, it is gone</span>
+				<i>K</i><span>capture — drop the current look here as a preset</span>
+				<i>M</i><span>patch readout — base plus every contribution, by name</span>
 				<i>P</i><span>copy current tuning to clipboard</span>
 				<i>Esc</i><span>cursor out — panel stays live</span>
 			</div>
