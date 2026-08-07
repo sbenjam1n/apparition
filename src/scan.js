@@ -1,8 +1,20 @@
 // The scan.
 //
-// Answering a specific question: does an abstracted point-cloud world — House of
-// Cards, a LIDAR return, the pen's flying particles — buy *more destructible*
-// environments? The honest answer is yes, but not for the reason it looks like,
+// The reference is the House of Cards video (Frost / Koblin, 2008), which was
+// shot without a single camera or light. Two systems: Geometric Informatics
+// structured light for the close work, and a Velodyne HDL-64E — sixty-four
+// lasers on a head spinning at 900rpm — for everything environmental. The
+// numbers in SCAN below are that sensor's.
+//
+// The thing that took a rewrite to understand is that **a point cloud is a
+// property of the sensor, not of the world**. The first version of this file
+// walked every collider face on a Cartesian grid, which gives a point-ified
+// mesh: evenly dense everywhere, no voids, no rings, identical density at one
+// metre and at forty. Every one of those is wrong, and none of them can be fixed
+// by tuning — they are fixed by actually casting the beams.
+//
+// It also answers a specific question: does an abstracted point-cloud world buy
+// *more destructible* environments? Yes, but not for the reason it looks like,
 // and the distinction matters enough to write down before any of this is tuned.
 //
 // It does NOT raise the physics budget. If "destructible" means more
@@ -45,17 +57,37 @@ import { LIGHT_GLSL } from './lighting.js';
 
 export const SCAN = {
 
-	// --- sampling -----------------------------------------------------------
-	// Anisotropic on purpose. Even spacing reads as noise; rows read as a scan,
-	// and the visible structure of the *sampling* is most of why the reference
-	// images look like data rather than like particles.
-	rowGap: 0.17,            // metres between scan rows
-	dotGap: 0.062,           // metres between samples along a row
-	jitter: 0.35,            // fraction of spacing; kills the moire, keeps the rows
-	// Trimmed from 300k. Per-vertex lighting moved the cost from fragments to
-	// points, which means point count is now the whole budget — and the target is
-	// a 2019 integrated part, not this machine.
-	budget: 170000,          // hard cap; spacing is relaxed until the set fits
+	// --- the sensor ---------------------------------------------------------
+	//
+	// These are the Velodyne HDL-64E's numbers, because they are the numbers the
+	// House of Cards exteriors were shot on: sixty-four lasers on one spinning
+	// head, a 26.8-degree vertical fan running from +2 down to -24.8, and a
+	// revolution every 1/15th of a second. The horizontal step is the one this
+	// build coarsens — the real sensor samples azimuth at 0.08 degrees, which is
+	// four and a half thousand columns per turn.
+	//
+	// The ratio between the two is not a detail, it is the entire look. Vertical
+	// spacing is five times the horizontal, so a return lands as a *line* with
+	// gaps above and below it rather than as a fog of evenly spread dots. Sample
+	// isotropically and you get static; keep the anisotropy and you get a scan.
+	// Thirty-two rather than the hardware's sixty-four, and that is a considered
+	// trade rather than a shortcut. What you see is the *ratio* between vertical
+	// and horizontal spacing, not the beam count — sixty-four rings inside a fixed
+	// point budget forces the azimuth step up to meet them, which lands at roughly
+	// one-to-one and turns the scan back into static. Halving the fan buys the
+	// anisotropy back and spends the saving on stations, which is what makes the
+	// room readable.
+	beams: 32,
+	fovTop: 2.0,             // degrees above horizontal
+	fovBottom: - 24.8,       // and below. Asymmetric, ground-biased, as built.
+	azimuthStep: 0.10,       // degrees, solved down to the budget at build
+	range: 60,               // metres
+	rangeNoise: 0.012,       // metres of jitter, along the ray and nowhere else
+	// A return needs backscatter. A beam arriving almost parallel to a surface
+	// mostly does not come back, which is why real scans thin out and then fail
+	// across grazing floors and far walls.
+	grazeCutoff: 0.12,
+	budget: 200000,          // hard cap; azimuth is relaxed until the set fits
 	// Fraction of the set actually drawn. Points are shuffled at build time, so a
 	// prefix of the buffer is a uniform random subset of the room and the LOD is a
 	// single drawRange call — no rebuild, no popping, no spatial bias.
@@ -98,6 +130,10 @@ export const SCAN = {
 };
 
 const _c = new THREE.Color();
+
+// Shared hit record. Two hundred thousand rays is two hundred thousand object
+// allocations if this is returned fresh each time.
+const _hit = { t: 0, nx: 0, ny: 0, nz: 0 };
 
 export class ScanField {
 
@@ -263,40 +299,82 @@ export class ScanField {
 	// modelled separately from the collision would eventually disagree with it,
 	// and in a game about threading gaps at speed a wall that draws in the wrong
 	// place is not a visual bug, it is a lie about where you can fly.
+	// Occupy the room with a survey rather than a texture.
+	//
+	// The previous sampler walked every collider face on a Cartesian grid, which
+	// produces a point-ified mesh: evenly dense everywhere, no voids, no rings,
+	// and identical density at one metre and forty. None of those are properties
+	// of a room — they are properties of a scanner, and getting them requires
+	// actually casting the rays.
+	//
+	// What that buys, in order of how much it matters:
+	//
+	//   1. Occlusion shadows. A return exists only where a beam reached, so every
+	//      pier and plinth throws a wedge of absent points behind it. This is the
+	//      single most recognisable thing about the reference, and no amount of
+	//      surface sampling produces it.
+	//   2. Rings. A fixed vertical fan on a spinning head paints conic sections —
+	//      concentric arcs on the floor, hyperbolic curves up a wall — never a
+	//      grid aligned to the architecture.
+	//   3. Angular density. Points diverge with range, so near surfaces are dense
+	//      and far ones sparse, which is most of how a scan conveys depth.
+	//
+	// Several stations, unioned, is also how a real survey is done: one setup
+	// leaves too much in shadow, so the scanner is moved and the clouds are
+	// registered together.
 	build( solver, panels = [] ) {
 
 		const R = this.room;
-		const pts = [];
 
-		// Relax spacing until the set fits the budget, rather than truncating —
-		// a truncated cloud is a room with one wall missing.
-		let row = SCAN.rowGap, dot = SCAN.dotGap;
+		// Colliders, flattened once, plus the panels — which are not solver
+		// geometry and would otherwise be the one part of the room no beam can
+		// find.
+		const boxes = solver.boxes.slice();
 
-		for ( let attempt = 0; attempt < 12; attempt ++ ) {
+		for ( const p of panels ) {
 
-			pts.length = 0;
-			this._samplePlanes( solver, pts, row, dot );
-			this._sampleBoxes( solver, pts, row, dot );
-			// Weak panels are not solver colliders, so they would otherwise be the
-			// one part of the room that is invisible in a world made of scan.
-			for ( const p of panels ) {
-
-				this._sampleBoxes( { boxes: [ {
-					cx: p.center.x, cy: p.center.y, cz: p.center.z,
-					hx: p.half.x, hy: p.half.y, hz: p.half.z } ] }, pts, row * 0.6, dot * 0.6 );
-
-			}
-
-			if ( pts.length / 7 <= SCAN.budget ) break;
-			row *= 1.18; dot *= 1.18;
+			boxes.push( { cx: p.center.x, cy: p.center.y, cz: p.center.z,
+				hx: p.half.x, hy: p.half.y, hz: p.half.z } );
 
 		}
 
+		this._boxes = boxes;
+		this._planes = solver.planes;
+		this._bounds = {
+			lo: { x: - R.halfW - 0.4, y: R.pool.bottom - 0.4, z: - R.halfD - 0.4 },
+			hi: { x: R.halfW + 0.4, y: R.height + 0.4, z: R.halfD + 0.4 }
+		};
+
+		const stations = this.stations || ScanField.defaultStations( R );
+		this.stations = stations;
+
+		// Solve the azimuth against the budget instead of sweeping and discarding.
+		// The obvious loop — sweep, check, coarsen, repeat — ran the survey seven
+		// times over and cost two and a half seconds of frozen page for a result
+		// that one pass produces in two hundred milliseconds. A coarse pilot
+		// measures the hit rate; the rest is arithmetic.
+		const pilot = [];
+		const pilotAz = 4.0;
+		this._sweep( stations[ 0 ], pilot, pilotAz );
+
+		const pilotRays = SCAN.beams * Math.round( 360 / pilotAz );
+		const hitRate = Math.max( 0.02, ( pilot.length / 7 ) / pilotRays );
+		const colsAllowed = SCAN.budget / ( stations.length * SCAN.beams * hitRate );
+
+		let az = Math.max( SCAN.azimuthStep, 360 / Math.max( 32, colsAllowed ) );
+
+		const pts = [];
+		for ( const st of stations ) this._sweep( st, pts, az );
+
+		this.azimuthUsed = az;
+		// Vertical spacing over horizontal. Real hardware is about five to one and
+		// that ratio is the difference between a scan and a fog of dots.
+		this.anisotropy = + ( ( ( SCAN.fovTop - SCAN.fovBottom ) / ( SCAN.beams - 1 ) ) / az ).toFixed( 2 );
+		this.rays = Math.round( stations.length * SCAN.beams * ( 360 / az ) );
 		this._shuffle( pts );
 
 		const n = pts.length / 7;
 		this.count = n;
-		this.spacing = { row, dot };
 
 		const pos = new Float32Array( n * 3 );
 		const nrm = new Float32Array( n * 3 );
@@ -332,6 +410,138 @@ export class ScanField {
 
 	}
 
+	// Where the scanner was set up. One station is the most faithful thing to do
+	// and leaves half the room in shadow; a survey uses several and registers
+	// them, which is what these are. Heights and tilts vary because the sensor's
+	// fan is ground-biased — a level head at eye height never sees a ceiling.
+	static defaultStations( R ) {
+
+		const d = Math.PI / 180;
+		return [
+			{ x: 0, y: 6.4, z: 7.0, tilt: - 6 * d, yaw: 0 },
+			{ x: 0, y: 6.4, z: - 7.0, tilt: - 6 * d, yaw: Math.PI },
+			{ x: - 8.5, y: 1.1, z: - 2.0, tilt: 34 * d, yaw: 0.6 },
+			{ x: 8.5, y: 1.1, z: 4.0, tilt: 34 * d, yaw: - 2.1 }
+		];
+
+	}
+
+	// One revolution. Sixty-four beams, one azimuth column at a time.
+	_sweep( st, out, azStep ) {
+
+		const beams = SCAN.beams;
+		const top = SCAN.fovTop * Math.PI / 180;
+		const bottom = SCAN.fovBottom * Math.PI / 180;
+		const cols = Math.max( 8, Math.round( 360 / azStep ) );
+		const ct = Math.cos( st.tilt ), stl = Math.sin( st.tilt );
+
+		for ( let b = 0; b < beams; b ++ ) {
+
+			const el = bottom + ( top - bottom ) * ( b / ( beams - 1 ) );
+			const ce = Math.cos( el ), se = Math.sin( el );
+
+			for ( let c = 0; c < cols; c ++ ) {
+
+				const a = st.yaw + ( c / cols ) * Math.PI * 2;
+
+				// Beam direction in the head's frame, then pitched by the mount.
+				const fx = ce * Math.sin( a ), fy = se, fz = ce * Math.cos( a );
+				const dx = fx;
+				const dy = fy * ct - fz * stl;
+				const dz = fy * stl + fz * ct;
+
+				if ( ! this._cast( st.x, st.y, st.z, dx, dy, dz ) ) continue;
+
+				// Grazing incidence returns little or nothing. This is why a real
+				// scan frays out across a floor rather than ending at a clean edge.
+				const cosI = Math.abs( dx * _hit.nx + dy * _hit.ny + dz * _hit.nz );
+				if ( cosI < SCAN.grazeCutoff ) continue;
+				if ( Math.random() > Math.min( 1, cosI * 2.4 ) ) continue;
+
+				// Range noise lives along the ray and nowhere else — the sensor is
+				// uncertain about distance, not about direction.
+				const t = _hit.t + ( Math.random() - 0.5 ) * SCAN.rangeNoise * 2;
+
+				this._push( out, st.x + dx * t, st.y + dy * t, st.z + dz * t,
+					_hit.nx, _hit.ny, _hit.nz );
+
+			}
+
+		}
+
+	}
+
+	// Nearest hit against the room's half-spaces and boxes.
+	_cast( ox, oy, oz, dx, dy, dz ) {
+
+		let best = SCAN.range, bnx = 0, bny = 0, bnz = 0, found = false;
+		const B = this._bounds;
+
+		for ( const pl of this._planes ) {
+
+			const den = dx * pl.nx + dy * pl.ny + dz * pl.nz;
+			if ( den > - 1e-6 ) continue;                        // facing away
+			const t = ( pl.d - ( ox * pl.nx + oy * pl.ny + oz * pl.nz ) ) / den;
+			if ( t <= 0.05 || t >= best ) continue;
+
+			// A half-space is infinite; the room is not.
+			const hx = ox + dx * t, hy = oy + dy * t, hz = oz + dz * t;
+			if ( hx < B.lo.x || hx > B.hi.x || hy < B.lo.y || hy > B.hi.y || hz < B.lo.z || hz > B.hi.z ) continue;
+
+			best = t; bnx = pl.nx; bny = pl.ny; bnz = pl.nz; found = true;
+
+		}
+
+		for ( const b of this._boxes ) {
+
+			// Cheap reject before the slab test. A ray only cares about a box whose
+			// centre lies ahead of it and nearer than the best hit so far, and that
+			// is six flops against the slab test's forty. With thirty-odd colliders
+			// and two hundred thousand rays it is the difference between a build you
+			// wait through and one you do not notice.
+			const ex = b.cx - ox, ey = b.cy - oy, ez = b.cz - oz;
+			const along = ex * dx + ey * dy + ez * dz;
+			const reach = b._r || ( b._r = Math.sqrt( b.hx * b.hx + b.hy * b.hy + b.hz * b.hz ) );
+			if ( along + reach < 0.05 || along - reach > best ) continue;
+			// And a perpendicular reject: the ray must pass within the box's own
+			// bounding sphere.
+			const px2 = ex - dx * along, py2 = ey - dy * along, pz2 = ez - dz * along;
+			if ( px2 * px2 + py2 * py2 + pz2 * pz2 > reach * reach ) continue;
+
+			let tmin = 0.05, tmax = best, axis = 0, sign = 1;
+
+			for ( let a = 0; a < 3; a ++ ) {
+
+				const o = a === 0 ? ox : a === 1 ? oy : oz;
+				const dd = a === 0 ? dx : a === 1 ? dy : dz;
+				const c = a === 0 ? b.cx : a === 1 ? b.cy : b.cz;
+				const h = a === 0 ? b.hx : a === 1 ? b.hy : b.hz;
+
+				if ( Math.abs( dd ) < 1e-9 ) { if ( Math.abs( o - c ) > h ) { tmin = tmax + 1; break; } continue; }
+
+				let t1 = ( c - h - o ) / dd, t2 = ( c + h - o ) / dd, s = - 1;
+				if ( t1 > t2 ) { const q = t1; t1 = t2; t2 = q; s = 1; }
+				if ( t1 > tmin ) { tmin = t1; axis = a; sign = s; }
+				if ( t2 < tmax ) tmax = t2;
+				if ( tmin > tmax ) break;
+
+			}
+
+			if ( tmin > tmax || tmin >= best || tmin <= 0.05 ) continue;
+
+			best = tmin; found = true;
+			bnx = axis === 0 ? sign : 0;
+			bny = axis === 1 ? sign : 0;
+			bnz = axis === 2 ? sign : 0;
+
+		}
+
+		if ( ! found ) return false;
+		_hit.t = best; _hit.nx = bnx; _hit.ny = bny; _hit.nz = bnz;
+		return true;
+
+	}
+
 	_push( out, x, y, z, nx, ny, nz ) {
 
 		out.push( x, y, z, nx, ny, nz, Math.random() );
@@ -362,96 +572,6 @@ export class ScanField {
 		SCAN.lod = Math.max( 0.05, Math.min( 1, f ) );
 		this.drawn = Math.round( this.count * SCAN.lod );
 		this.geometry.setDrawRange( 0, this.drawn );
-
-	}
-
-	// Room bounds, so an infinite half-space becomes a finite wall.
-	_samplePlanes( solver, out, row, dot ) {
-
-		const R = this.room;
-		const lo = { x: - R.halfW, y: R.pool.bottom, z: - R.halfD };
-		const hi = { x: R.halfW, y: R.height, z: R.halfD };
-
-		for ( const pl of solver.planes ) {
-
-			// Which axis the plane faces decides which two axes it spans.
-			const ax = Math.abs( pl.nx ) > 0.5 ? 0 : Math.abs( pl.ny ) > 0.5 ? 1 : 2;
-			const u = ax === 0 ? 1 : 0;          // rows run along here
-			const v = ax === 2 ? 1 : 2;
-
-			// A point on the plane: n·p = d, so p = n*d.
-			const base = [ pl.nx * pl.d, pl.ny * pl.d, pl.nz * pl.d ];
-			const loA = [ lo.x, lo.y, lo.z ], hiA = [ hi.x, hi.y, hi.z ];
-
-			for ( let a = loA[ u ]; a <= hiA[ u ]; a += row ) {
-
-				for ( let b = loA[ v ]; b <= hiA[ v ]; b += dot ) {
-
-					const p = [ base[ 0 ], base[ 1 ], base[ 2 ] ];
-					p[ u ] = a + ( Math.random() - 0.5 ) * row * SCAN.jitter;
-					p[ v ] = b + ( Math.random() - 0.5 ) * dot * SCAN.jitter;
-					this._push( out, p[ 0 ], p[ 1 ], p[ 2 ], pl.nx, pl.ny, pl.nz );
-
-				}
-
-			}
-
-		}
-
-		// The floor is not a solver plane — bodies rest on the pool box — so it is
-		// sampled explicitly rather than being left as a hole in the world.
-		for ( let x = - R.halfW; x <= R.halfW; x += row ) {
-
-			for ( let z = - R.halfD; z <= R.halfD; z += dot ) {
-
-				const inPool = x > R.pool.x0 && x < R.pool.x1 && z > R.pool.z0 && z < R.pool.z1;
-				this._push( out,
-					x + ( Math.random() - 0.5 ) * row * SCAN.jitter, inPool ? R.pool.water : 0,
-					z + ( Math.random() - 0.5 ) * dot * SCAN.jitter, 0, 1, 0 );
-
-			}
-
-		}
-
-	}
-
-	// Six faces per box. Rows run along the face's longer axis so the scan lines
-	// read as horizontal on a wall and as depth on a floor.
-	_sampleBoxes( solver, out, row, dot ) {
-
-		for ( const b of solver.boxes ) {
-
-			const h = [ b.hx, b.hy, b.hz ];
-			const c = [ b.cx, b.cy, b.cz ];
-
-			for ( let axis = 0; axis < 3; axis ++ ) {
-
-				const u = ( axis + 1 ) % 3, v = ( axis + 2 ) % 3;
-
-				for ( const sign of [ - 1, 1 ] ) {
-
-					for ( let a = - h[ u ]; a <= h[ u ]; a += row ) {
-
-						for ( let d = - h[ v ]; d <= h[ v ]; d += dot ) {
-
-							const p = [ 0, 0, 0 ];
-							p[ axis ] = c[ axis ] + sign * h[ axis ];
-							p[ u ] = c[ u ] + a + ( Math.random() - 0.5 ) * row * SCAN.jitter;
-							p[ v ] = c[ v ] + d + ( Math.random() - 0.5 ) * dot * SCAN.jitter;
-
-							const nrm = [ 0, 0, 0 ];
-							nrm[ axis ] = sign;
-							this._push( out, p[ 0 ], p[ 1 ], p[ 2 ], nrm[ 0 ], nrm[ 1 ], nrm[ 2 ] );
-
-						}
-
-					}
-
-				}
-
-			}
-
-		}
 
 	}
 

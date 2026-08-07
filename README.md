@@ -116,7 +116,38 @@ then let go of keeps every joule you gave it, which is the whole reason not to
 eat everything.
 
 **The world** (`scan.js`) — architecture is a point cloud, and it is the room
-rather than a skin over it. Every point is generated from `solver.planes`,
+rather than a skin over it. The reference is the *House of Cards* video (Frost /
+Koblin, 2008), shot [without a single camera or light](https://www.aaronkoblin.com/project/house-of-cards/):
+Geometric Informatics structured light for the close work, and a **Velodyne
+HDL-64E** — 64 lasers on a head spinning at 900rpm — for everything
+environmental. `SCAN`'s numbers are that sensor's: a 26.8° vertical fan running
++2° to −24.8°, and a horizontal step the hardware sets at 0.08°.
+
+The thing that took a rewrite to understand is that **a point cloud is a property
+of the sensor, not of the world**. The first version walked every collider face
+on a Cartesian grid, which gives a point-ified mesh — evenly dense everywhere, no
+voids, no rings, identical density at one metre and at forty. None of that is
+fixable by tuning. The points are cast now, from four registered stations, which
+buys three things in order of how much they matter:
+
+1. **Occlusion shadows.** A return exists only where a beam reached, so every
+   pier throws a wedge of absent points behind it. This is the most recognisable
+   thing about the reference and no amount of surface sampling produces it.
+2. **Rings.** A fixed vertical fan on a spinning head paints conic sections —
+   arcs across a floor, curves up a wall — never a grid aligned to the walls.
+3. **Angular density.** Points diverge with range, which is most of how a scan
+   conveys depth.
+
+Plus the small authentic failures: range noise lives along the ray and nowhere
+else, and returns thin out and then fail at grazing incidence, which is why a
+real scan frays across a floor instead of ending at a clean edge.
+
+The one deliberate deviation is the beam count — 32 rather than 64. What you see
+is the *ratio* of vertical to horizontal spacing, not the beam count, and 64
+rings inside a fixed point budget forces the azimuth step up to meet them, lands
+at about one-to-one, and turns the scan back into static. Halving the fan buys
+the anisotropy back (3.8:1 against the hardware's 5:1) and spends the saving on
+stations, which is what makes the room readable. Every point is generated from `solver.planes`,
 `solver.boxes` and the weak panels, so the thing you see cannot disagree with the
 thing you hit. The height ramp is a LIDAR convention rather than a lighting
 model, and it is doing real work: a point cloud is worst at telling you where you
@@ -201,7 +232,7 @@ Measured at the shipped numbers, on a 78 kg block released from 7m:
 | the stream, at 16 kg/s | tile 240/s, concrete 180/s, glass 1140/s, steel 60/s — same mass, same 14 m/s of recoil |
 | cutting an intact partition open | steel 0.5 s to bite and 1.4 s to breach, glass 0.6 / 1.9, concrete 0.9 / 2.1 |
 | 1527 shards | 0.103 ms/frame, against 0.41 ms/step for 120 rigid bodies |
-| the scan | 233,638 points, 10 MB, built once from the colliders |
+| the scan | 193,732 points from 202,460 cast beams, built in 236 ms |
 | `carve()` / `passable()` | 8 µs / under 0.1 µs |
 | cutting a passage | 183 points erased; the player crosses at 9 m/s where 3m higher still stops them |
 | LOD | a `drawRange` over a shuffled set — any prefix is an unbiased sample of the room, so thinning to 42% costs nothing and is spatially even |
