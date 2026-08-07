@@ -1,8 +1,9 @@
 # APPARITION — feel test 02
 
-A ground-up 6DOF prototype under MIT. Flight, an accretion funnel, authored
-destruction, AVBD debris, and a reactive light rig, in one tiled liminal room
-with nothing else running.
+A ground-up 6DOF prototype under MIT. Flight, an accretion funnel, AVBD debris,
+and a reactive light rig, in one room rendered as a **scan** — a quarter of a
+million points derived from the collision geometry, eroded rather than fractured.
+Nothing else is running.
 
 This exists to answer one question, which the design index calls **the killing
 test** (§29, Phase 0):
@@ -114,6 +115,36 @@ something already doing 9 m/s your way is free. A body you pull halfway in and
 then let go of keeps every joule you gave it, which is the whole reason not to
 eat everything.
 
+**The world** (`scan.js`) — architecture is a point cloud, and it is the room
+rather than a skin over it. Every point is generated from `solver.planes`,
+`solver.boxes` and the weak panels, so the thing you see cannot disagree with the
+thing you hit. The height ramp is a LIDAR convention rather than a lighting
+model, and it is doing real work: a point cloud is worst at telling you where you
+are, and colour-by-height answers that instantly.
+
+The reason to do this is not that points are prettier. It is that **a point has
+no interior**. Carving a mesh means CSG, cap generation and unshaded backfaces;
+carving a point set means not drawing some points. So destruction stops being
+authored — `destruct.js` needs a hand-built chunk grid and a tuned weld lattice
+per panel, which is why this build has three destructible surfaces rather than
+three hundred, and the scan erodes everywhere by default.
+
+And erosion is not cosmetic. Each cell of a one-metre grid tracks how many of its
+samples survive; below `breachAt` it stops being a surface, and `flight.js` reads
+exactly that number when resolving collisions. **You fly through the hole you
+cut, and you cannot cut a hole you cannot fly through**, because there is one
+occupancy fact underneath both. Measured: 183 points erased opens a passage the
+player crosses at speed, while the same wall 3m higher still stops them dead.
+
+Damage is a *field*, which retires a state machine. INTACT/BREACHED/OPEN exists
+because a mesh has to be told which discrete configuration it is in; `intact()`
+returns a continuous density and an aperture is a place where it is low.
+
+Light fixtures stay solid — a lamp is the source doing the sensing, not
+architecture being sensed — and so does loose debris. That second one is a
+position rather than a compromise: solidity marks what you can touch, which is
+most of what keeps a point-cloud world readable.
+
 **Shards** (`shred.js`) — the ammunition is not rigid bodies. It cannot be: the
 solver caps at 640 with a contact graph behind each one, so "more debris" bought
 more cost and never bought the feeling of something being torn apart. Eight
@@ -170,6 +201,10 @@ Measured at the shipped numbers, on a 78 kg block released from 7m:
 | the stream, at 16 kg/s | tile 240/s, concrete 180/s, glass 1140/s, steel 60/s — same mass, same 14 m/s of recoil |
 | cutting an intact partition open | steel 0.5 s to bite and 1.4 s to breach, glass 0.6 / 1.9, concrete 0.9 / 2.1 |
 | 1527 shards | 0.103 ms/frame, against 0.41 ms/step for 120 rigid bodies |
+| the scan | 233,638 points, 10 MB, built once from the colliders |
+| `carve()` / `passable()` | 8 µs / under 0.1 µs |
+| cutting a passage | 183 points erased; the player crosses at 9 m/s where 3m higher still stops them |
+| LOD | a `drawRange` over a shuffled set — any prefix is an unbiased sample of the room, so thinning to 42% costs nothing and is spatially even |
 
 The slingshot curve is the whole mechanic in one row: a 0.4 s hold releases 2020
 N·s and 26 kJ — well over twice what a fired shot carries — and a 0.5 s hold

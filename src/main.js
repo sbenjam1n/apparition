@@ -75,21 +75,34 @@ scatterProps( solver, ( i, kind ) => debris.register( i, kind ) );
 // overlay is being able to A/B it against the meshes in the same room rather than
 // arguing about it.
 const scan = new ScanField( scene, rig, ROOM );
-scan.build( solver );
+scan.build( solver, panels );
 
-const VIEW = { mode: 'mesh' };
+// The scan is the world now, and 'mesh' survives only as a reference view for
+// checking that the two agree.
+const VIEW = { mode: 'scan' };
 
 function applyView() {
 
 	const showMesh = VIEW.mode !== 'scan';
-	room.group.visible = showMesh;
 	scan.points.visible = VIEW.mode !== 'mesh';
+
+	// Everything in the room group goes except the emitters. A light fixture is
+	// not architecture being sensed, it is the source doing the sensing — it has
+	// to stay solid or the room loses the only thing it is lit by.
+	for ( const c of room.group.children ) c.visible = c === room.emitters ? true : showMesh;
 	for ( const p of panels ) if ( p.mesh ) p.mesh.visible = showMesh;
-	// Loose matter keeps its solid geometry in every mode. That is the correct
-	// read rather than a compromise: architecture is inferred from a scan, and a
-	// chunk you tore out of it is a real thing you are carrying.
+
+	// Loose matter keeps its solid geometry in every mode, and that is a position
+	// rather than a compromise. Architecture is inferred; a chunk you tore out of
+	// it is a real object you are carrying. Solidity marks what you can touch,
+	// which is most of what stops a point-cloud world being unreadable.
+
+	flight.scanActive = VIEW.mode !== 'mesh';
 
 }
+
+flight.scan = scan;
+applyView();
 
 const post = new PostStack( renderer, scene, camera );
 const audio = new ImpactAudio();
@@ -148,6 +161,10 @@ solver.onFracture = ( j, force, x, y, z, group ) => {
 
 	audio.impact( 1.5 + Math.min( 7, force / 3200 ), MATERIAL_KIND.CONCRETE, 0 );
 	destruction.onFracture( group );
+
+	// A weld letting go erodes the cloud where it let go, so the panel's own
+	// chunk physics and the scan cannot tell different stories about the wall.
+	if ( VIEW.mode !== 'mesh' ) scan.carve( x, y, z, 0.34 + Math.min( 0.9, force / 9000 ), 0.75 );
 
 };
 
@@ -252,12 +269,15 @@ shred.onStrike = ( x, y, z, nx, ny, nz, joules, material, panel ) => {
 // ordered cheapest-look-cost first: volumetric taps, then resolution, then
 // solver iterations, then bloom.
 
+// `scan` is the fraction of the point set drawn. It is first in the step-down
+// order for the same reason volumetric taps were: thinning a cloud evenly costs
+// almost nothing to look at, where dropping resolution costs a lot.
 const TIERS = [
-	{ dpr: 1.00, volumetric: 3, iterations: 6, substeps: 3, bloom: true },
-	{ dpr: 1.00, volumetric: 2, iterations: 5, substeps: 3, bloom: true },
-	{ dpr: 0.85, volumetric: 1, iterations: 4, substeps: 3, bloom: true },
-	{ dpr: 0.72, volumetric: 0, iterations: 4, substeps: 2, bloom: true },
-	{ dpr: 0.62, volumetric: 0, iterations: 3, substeps: 2, bloom: false }
+	{ dpr: 1.00, volumetric: 3, iterations: 6, substeps: 3, bloom: true, scan: 1.00 },
+	{ dpr: 1.00, volumetric: 2, iterations: 5, substeps: 3, bloom: true, scan: 0.82 },
+	{ dpr: 0.85, volumetric: 1, iterations: 4, substeps: 3, bloom: true, scan: 0.66 },
+	{ dpr: 0.72, volumetric: 0, iterations: 4, substeps: 2, bloom: true, scan: 0.52 },
+	{ dpr: 0.62, volumetric: 0, iterations: 3, substeps: 2, bloom: false, scan: 0.42 }
 ];
 
 const quality = {
@@ -296,6 +316,8 @@ function applyTier() {
 	solver.maxSubsteps = t.substeps;
 	post.bloom.enabled = t.bloom;
 	post.setSize( innerWidth, innerHeight, quality.dpr );
+	scan.setLod( t.scan );
+	scan.uniforms.uPixelRatio.value = quality.dpr;
 
 }
 
@@ -401,6 +423,9 @@ gAcc.add( accretion, 'selected', {
 
 const gScan = gui.addFolder( 'Scan (point-cloud world)' );
 gScan.add( VIEW, 'mode', [ 'mesh', 'scan', 'both' ] ).name( 'world' ).onChange( applyView );
+gScan.add( SCAN, 'lod', 0.05, 1, 0.01 ).name( 'density (LOD)' ).listen()
+	.onChange( v => scan.setLod( v ) );
+gScan.add( SCAN, 'breachAt', 0.02, 0.9, 0.01 ).name( 'breach threshold' );
 gScan.add( SCAN, 'pointSize', 0.5, 8, 0.1 ).name( 'point size (px @ 1m)' );
 gScan.add( SCAN, 'sizeFalloff', 0, 1.2, 0.02 ).name( 'size falloff' );
 gScan.add( SCAN, 'maxPixels', 1, 12, 0.5 ).name( 'max px' );
@@ -816,7 +841,7 @@ function frame() {
 		consumed: accretion.consumed,
 		stalled: accretion.stalled,
 		scanMode: VIEW.mode,
-		scanPoints: scan.count,
+		scanPoints: scan.drawn,
 		scanEroded: scan.eroded,
 		shards: shred.live,
 		jetRate: accretion.jetRate,

@@ -433,8 +433,28 @@ export class Flight {
 
 			for ( const p of s.planes ) {
 
-				const d = this.position.x * p.nx + this.position.y * p.ny + this.position.z * p.nz - p.d - r;
-				if ( d < deepest ) { deepest = d; nx = p.nx; ny = p.ny; nz = p.nz; }
+				const dist = this.position.x * p.nx + this.position.y * p.ny + this.position.z * p.nz - p.d;
+				const d = dist - r;
+				if ( d >= deepest ) continue;
+
+				// If the scan says the surface is gone here, it is gone here. This
+				// is the difference between a cloud that is a skin over a solid room
+				// and a cloud that *is* the room: you fly through the hole you cut,
+				// and you cannot cut a hole you cannot fly through, because one
+				// occupancy fact sits under both.
+				//
+				// The query has to be the point on the *surface*, not the point on
+				// the player. Asking at the player's skin works right up until the
+				// player penetrates, at which point the sample lands in the empty
+				// space behind the wall, finds no data, and conservatively answers
+				// "solid" — so the breach opens for every frame except the one that
+				// matters.
+				if ( this._open(
+					this.position.x - p.nx * dist,
+					this.position.y - p.ny * dist,
+					this.position.z - p.nz * dist ) ) continue;
+
+				deepest = d; nx = p.nx; ny = p.ny; nz = p.nz;
 
 			}
 
@@ -452,7 +472,15 @@ export class Flight {
 				else if ( oy <= oz ) { ay = Math.sign( dy ) || 1; d = - oy; }
 				else { az = Math.sign( dz ) || 1; d = - oz; }
 
-				if ( d < deepest ) { deepest = d; nx = ax; ny = ay; nz = az; }
+				if ( d >= deepest ) continue;
+
+				// Same rule on the face the player is closest to leaving through.
+				if ( this._open(
+					ax !== 0 ? b.cx + ax * b.hx : this.position.x,
+					ay !== 0 ? b.cy + ay * b.hy : this.position.y,
+					az !== 0 ? b.cz + az * b.hz : this.position.z ) ) continue;
+
+				deepest = d; nx = ax; ny = ay; nz = az;
 
 			}
 
@@ -478,6 +506,13 @@ export class Flight {
 		}
 
 		this._resolvePanels( r );
+
+	}
+
+	// Has this piece of surface stopped existing?
+	_open( qx, qy, qz ) {
+
+		return this.scan && this.scanActive ? this.scan.passable( qx, qy, qz ) : false;
 
 	}
 

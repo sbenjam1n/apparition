@@ -49,10 +49,14 @@ export const SCAN = {
 	// Anisotropic on purpose. Even spacing reads as noise; rows read as a scan,
 	// and the visible structure of the *sampling* is most of why the reference
 	// images look like data rather than like particles.
-	rowGap: 0.19,            // metres between scan rows
-	dotGap: 0.075,           // metres between samples along a row
+	rowGap: 0.17,            // metres between scan rows
+	dotGap: 0.062,           // metres between samples along a row
 	jitter: 0.35,            // fraction of spacing; kills the moire, keeps the rows
-	budget: 220000,          // hard cap; spacing is relaxed until the set fits
+	budget: 300000,          // hard cap; spacing is relaxed until the set fits
+	// Fraction of the set actually drawn. Points are shuffled at build time, so a
+	// prefix of the buffer is a uniform random subset of the room and the LOD is a
+	// single drawRange call — no rebuild, no popping, no spatial bias.
+	lod: 1.0,
 
 	// --- look ---------------------------------------------------------------
 	pointSize: 2.4,          // pixels at one metre
@@ -80,7 +84,13 @@ export const SCAN = {
 	// --- damage -------------------------------------------------------------
 	loosen: 0.55,            // metres a point drifts before it goes
 	dropAt: 1.0,             // damage at which a point stops drawing
-	settle: 0.0              // damage decay per second; 0 = permanent (§7.5)
+	settle: 0.0,             // damage decay per second; 0 = permanent (§7.5)
+	// Below this surviving fraction, a cell stops being a surface and starts
+	// being a hole. This is the number that turns the scan from a skin into a
+	// world: flight.js reads it, so what you can see through is what you can fly
+	// through, and neither can drift from the other because there is only one
+	// fact underneath both.
+	breachAt: 0.34
 
 };
 
@@ -245,7 +255,7 @@ export class ScanField {
 	// modelled separately from the collision would eventually disagree with it,
 	// and in a game about threading gaps at speed a wall that draws in the wrong
 	// place is not a visual bug, it is a lie about where you can fly.
-	build( solver ) {
+	build( solver, panels = [] ) {
 
 		const R = this.room;
 		const pts = [];
@@ -259,10 +269,22 @@ export class ScanField {
 			pts.length = 0;
 			this._samplePlanes( solver, pts, row, dot );
 			this._sampleBoxes( solver, pts, row, dot );
+			// Weak panels are not solver colliders, so they would otherwise be the
+			// one part of the room that is invisible in a world made of scan.
+			for ( const p of panels ) {
+
+				this._sampleBoxes( { boxes: [ {
+					cx: p.center.x, cy: p.center.y, cz: p.center.z,
+					hx: p.half.x, hy: p.half.y, hz: p.half.z } ] }, pts, row * 0.6, dot * 0.6 );
+
+			}
+
 			if ( pts.length / 7 <= SCAN.budget ) break;
 			row *= 1.18; dot *= 1.18;
 
 		}
+
+		this._shuffle( pts );
 
 		const n = pts.length / 7;
 		this.count = n;
@@ -295,7 +317,7 @@ export class ScanField {
 		this.damageAttr.setUsage( THREE.DynamicDrawUsage );
 		this.geometry.setAttribute( 'aDamage', this.damageAttr );
 		this.geometry.setAttribute( 'aSeed', new THREE.BufferAttribute( this.seed, 1 ) );
-		this.geometry.setDrawRange( 0, n );
+		this.setLod( SCAN.lod );
 
 		this._buildHash();
 		return n;
@@ -305,6 +327,33 @@ export class ScanField {
 	_push( out, x, y, z, nx, ny, nz ) {
 
 		out.push( x, y, z, nx, ny, nz, Math.random() );
+
+	}
+
+	// Fisher-Yates over the seven-float records, before anything is uploaded.
+	// This is what makes the LOD free: any prefix of a shuffled set is an unbiased
+	// sample of the room, so dropping to 45% thins the whole world evenly instead
+	// of deleting a wall.
+	_shuffle( a ) {
+
+		for ( let i = a.length / 7 - 1; i > 0; i -- ) {
+
+			const j = Math.floor( Math.random() * ( i + 1 ) );
+			for ( let k = 0; k < 7; k ++ ) {
+
+				const t = a[ i * 7 + k ]; a[ i * 7 + k ] = a[ j * 7 + k ]; a[ j * 7 + k ] = t;
+
+			}
+
+		}
+
+	}
+
+	setLod( f ) {
+
+		SCAN.lod = Math.max( 0.05, Math.min( 1, f ) );
+		this.drawn = Math.round( this.count * SCAN.lod );
+		this.geometry.setDrawRange( 0, this.drawn );
 
 	}
 
@@ -439,6 +488,37 @@ export class ScanField {
 		this.hashStart = counts;
 		this.hashList = list;
 
+		// Occupancy, maintained incrementally. Asking "is this cell still a
+		// surface" has to be O(1) — it is answered once per collision iteration
+		// per plane per frame, and walking the point list there would cost more
+		// than the whole flight model.
+		this.cellTotal = new Int32Array( cells );
+		this.cellAlive = new Int32Array( cells );
+
+		for ( let c = 0; c < cells; c ++ ) {
+
+			this.cellTotal[ c ] = counts[ c + 1 ] - counts[ c ];
+			this.cellAlive[ c ] = this.cellTotal[ c ];
+
+		}
+
+	}
+
+	// Has this place stopped being a wall?
+	//
+	// Queried with a point *on the surface*, never with the player's position: a
+	// cell holding no samples answers "solid", deliberately and conservatively,
+	// because no data is not the same as no wall and the alternative is falling
+	// out of the world wherever the sampler happened to miss.
+	passable( x, y, z ) {
+
+		if ( ! this.cellTotal ) return false;
+		const c = this._cell( x, y, z );
+		if ( c < 0 ) return false;
+		const t = this.cellTotal[ c ];
+		if ( t === 0 ) return false;
+		return this.cellAlive[ c ] / t < SCAN.breachAt;
+
 	}
 
 	_cell( x, y, z ) {
@@ -495,7 +575,15 @@ export class ScanField {
 						const fall = 1 - Math.sqrt( d2 ) / radius;
 						const was = this.damage[ p ];
 						this.damage[ p ] = Math.min( SCAN.dropAt, was + amount * fall * fall );
-						if ( was < SCAN.dropAt && this.damage[ p ] >= SCAN.dropAt ) this.eroded ++;
+
+						if ( was < SCAN.dropAt && this.damage[ p ] >= SCAN.dropAt ) {
+
+							this.eroded ++;
+							const home = this._cell( this.px[ p ], this.py[ p ], this.pz[ p ] );
+							if ( home >= 0 ) this.cellAlive[ home ] --;
+
+						}
+
 						touched ++;
 
 					}
@@ -561,6 +649,7 @@ export class ScanField {
 
 		this.damage.fill( 0 );
 		this.eroded = 0;
+		if ( this.cellTotal ) this.cellAlive.set( this.cellTotal );
 		this._dirty = true;
 
 	}
