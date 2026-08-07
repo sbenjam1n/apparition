@@ -233,6 +233,52 @@ on it clicks where separate rise and fall times make it swell and decay. And
 parameter *offsets* and a feather distance, so crossing a boundary cross-fades,
 and overlapping zones sum into somewhere neither describes alone.
 
+**Metasurfaces** (`metasurface.js`) — Ross Bencina's
+[Metasurface](https://www.researchgate.net/publication/221165071_The_Metasurface_Applying_Natural_Neighbour_Interpolation_to_Two-to-Many_Mapping)
+(NIME 2005) is an interface for designing two-to-many mappings by *placing
+parameter snapshots on a plane* and interpolating between them as a cursor moves
+across it. His argument is the choice of interpolation: natural neighbour is
+local and Voronoi-based, and he contrasts it against global field methods on
+exactly the grounds that matter here — predictability, and holding detail at
+several scales on one surface without a preset across the room quietly
+influencing this corner of it.
+
+It replaces the zones, which were spheres with a radius and a feather: two
+hand-tuned numbers per region, overlaps summing to more than one and gaps to
+less. A metasurface has no radius. Presets are dropped where they belong and
+every point gets a blend whose weights sum to one by construction — **placement
+is the authoring**.
+
+Sibson's weights are area-stealing: insert the query into the Voronoi diagram and
+each natural neighbour's weight is the fraction of its cell that was taken. Doing
+that exactly means real computational geometry, so this uses the standard
+[discrete form](https://en.wikipedia.org/wiki/Natural_neighbor_interpolation) —
+scatter samples around the query, find each one's nearest preset, and credit a
+steal wherever the query is closer than that preset is. Verified against the
+properties that make it worth using:
+
+| | |
+|---|---|
+| exact at a preset | standing on one gives it weight 1.000 and the value back unchanged |
+| partition of unity | weights sum to exactly 1.0 at every point tested |
+| local | at 8m from one preset it takes 75%, the two far ones 13% each |
+| continuous | a walk across the surface moves `kaleid` 0 → 2.3 → 6.0 → 8.7 → 12 |
+| outside the hull | degrades to the nearest pair rather than failing |
+
+**Layers**: three surfaces — `look` (the hydra chain), `world` (the scan), `feel`
+(the funnel) — each owning a disjoint set of parameters, because the topology of
+where the look changes has no reason to match where the mechanics do. Presets
+carry a height and a band, so a building is a stack of two-dimensional surfaces
+rather than one three-dimensional one, which is both cheaper and how buildings
+actually are.
+
+**The editor is one gesture**: dial the look on the panel, fly to where it
+belongs, press `K`. Capture reads the *base* — what the sliders say — not the
+live composite, so a preset describes a place rather than whatever cue happened
+to be up as you flew through. `bake` writes the whole set to the clipboard as
+pasteable source, same as the tuning export, because a level that lives in a blob
+nobody can read is a level nobody edits.
+
 **Cues** (`modulation.js`) — above the routes sit scenes, and the right prior art
 is a lighting desk cue rather than a VJ bank: a named set of *absolute* levels, a
 fade-in time, a fade-out time, and a condition that fires it. **Two ramps rather

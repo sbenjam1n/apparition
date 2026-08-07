@@ -32,6 +32,7 @@ import { ScanField, SCAN } from './scan.js';
 import { PostStack, POST } from './fx.js';
 import { HYDRA } from './hydra.js';
 import { ModMatrix, CURVES, WHEN } from './modulation.js';
+import { MetaSurface, SurfaceMarkers } from './metasurface.js';
 import { ImpactAudio } from './audio.js';
 import { Hud } from './hud.js';
 
@@ -195,6 +196,77 @@ mod
 		'HYDRA.thresh': 0.22, 'HYDRA.invert': 0.5, 'HYDRA.saturate': - 0.5,
 		'SCAN.sparkle': 0.4
 	} } );
+
+// --- metasurfaces -----------------------------------------------------------
+//
+// Three surfaces, each owning a disjoint set of parameters, because the topology
+// of where the *look* changes has no reason to match where the *mechanics* do.
+// One might want six presets clustered around the pool; another might want two
+// for the whole building.
+
+const surfaces = [
+	new MetaSurface( 'look', [
+		'HYDRA.feedback', 'HYDRA.live', 'HYDRA.modAmount', 'HYDRA.modScale',
+		'HYDRA.selfModulate', 'HYDRA.fieldMix', 'HYDRA.kaleid', 'HYDRA.repeatX',
+		'HYDRA.repeatY', 'HYDRA.rotate', 'HYDRA.colorama', 'HYDRA.saturate',
+		'HYDRA.thresh', 'HYDRA.pixelate', 'HYDRA.posterize', 'HYDRA.invert'
+	], { vertical: 7 } ),
+
+	new MetaSurface( 'world', [
+		'SCAN.lit', 'SCAN.glow', 'SCAN.sparkle', 'SCAN.pointSize',
+		'SCAN.rampFloor', 'SCAN.rampCeil', 'SCAN.fogMix'
+	], { vertical: 7 } ),
+
+	new MetaSurface( 'feel', [
+		'ACC.intake', 'ACC.reach', 'ACC.swirl', 'ACC.viscosity', 'ACC.channelRate'
+	], { vertical: 9 } )
+];
+
+for ( const ms of surfaces ) mod.surface( ms );
+
+const markers = new SurfaceMarkers( scene );
+
+// The editor gesture, and it is one gesture: dial the look on the panel, fly to
+// where it belongs, take it. Capture reads the *base* — what the sliders say —
+// so a preset describes a place rather than whatever cue happened to be up as
+// you flew through.
+const editor = {
+
+	surface: 'look',
+	label: '',
+
+	capture() {
+
+		const ms = surfaces.find( s => s.name === editor.surface );
+		if ( ! ms ) return;
+		const p = flight.viewPosition;
+		const preset = ms.capture( editor.label || '', p.x, p.y, p.z, k => mod.base( k ) );
+		editor.label = '';
+		rebuildPresetGui();
+		showToast( `captured "${preset.label}" on ${ms.name}\n${
+			ms.presets.length} preset${ms.presets.length === 1 ? '' : 's'} on this surface` );
+
+	},
+
+	bake() {
+
+		const src = surfaces.map( s => s.bake() ).join( '\n' );
+		navigator.clipboard && navigator.clipboard.writeText( src ).catch( () => {} );
+		console.log( src );
+		showToast( `baked ${surfaces.reduce( ( n, s ) => n + s.presets.length, 0 )} presets to the clipboard` );
+
+	},
+
+	clearSurface() {
+
+		const ms = surfaces.find( s => s.name === editor.surface );
+		if ( ms ) { ms.presets.length = 0; rebuildPresetGui(); }
+
+	},
+
+	showMarkers: false
+
+};
 
 // --- cues -------------------------------------------------------------------
 //
@@ -677,6 +749,53 @@ gMod.add( mod, 'enabled' ).name( 'modulation on' );
 // the drag keeps being restored underneath and the slider appears to snap back.
 gMod.add( { rebase() { mod.rebase(); } }, 'rebase' ).name( 'take sliders as base' );
 
+const gSurf = gMod.addFolder( 'metasurfaces' );
+gSurf.add( editor, 'surface', surfaces.map( s => s.name ) ).name( 'editing' );
+gSurf.add( editor, 'label' ).name( 'label' ).listen();
+gSurf.add( editor, 'capture' ).name( 'CAPTURE HERE  (K)' );
+gSurf.add( editor, 'bake' ).name( 'bake to clipboard' );
+gSurf.add( editor, 'clearSurface' ).name( 'clear this surface' );
+gSurf.add( editor, 'showMarkers' ).name( 'show markers' )
+	.onChange( v => { markers.points.visible = v; } );
+
+for ( const ms of surfaces ) {
+
+	const f = gSurf.addFolder( ms.name );
+	f.add( ms, 'enabled' ).name( 'on' );
+	// Zero hands the parameters back to the sliders, which is how a surface gets
+	// auditioned against the look it is meant to replace.
+	f.add( ms, 'blend', 0, 1, 0.02 ).name( 'surface <-> sliders' );
+	f.add( ms, 'vertical', 0, 20, 0.5 ).name( 'storey height (m)' );
+	f.close();
+
+}
+
+const gPresets = gSurf.addFolder( 'presets' );
+let _presetCtrls = [];
+
+function rebuildPresetGui() {
+
+	for ( const c of _presetCtrls ) c.destroy();
+	_presetCtrls = [];
+
+	for ( const ms of surfaces ) {
+
+		for ( const p of ms.presets ) {
+
+			const row = { info: `${ms.name}  ${p.x.toFixed( 1 )}, ${p.y.toFixed( 1 )}, ${p.z.toFixed( 1 )}`,
+				remove() { ms.remove( p ); rebuildPresetGui(); } };
+			_presetCtrls.push( gPresets.add( row, 'info' ).name( p.label ).disable() );
+			_presetCtrls.push( gPresets.add( row, 'remove' ).name( '  remove' ) );
+
+		}
+
+	}
+
+}
+
+rebuildPresetGui();
+gPresets.close();
+
 const gScenes = gMod.addFolder( 'scenes (cues)' );
 for ( const sc of mod.scenes ) {
 
@@ -1048,6 +1167,7 @@ function frame() {
 	const state = input.sample();
 	state.probe = input.pressed( 'probe' );
 	state.vent = input.pressed( 'vent' );
+	if ( input.pressed( 'capture' ) ) editor.capture();
 	if ( input.pressed( 'reset' ) ) flight.reset();
 	if ( input.pressed( 'copyTuning' ) ) copyTuning();
 
@@ -1130,6 +1250,7 @@ function frame() {
 	}
 
 	mod.update( modState, dt );
+	if ( editor.showMarkers ) markers.update( surfaces );
 
 	post.update( dt, elapsed, { watts: accretion.watts, heat: accretion.heat, dilation } );
 
@@ -1175,6 +1296,8 @@ function frame() {
 		stalled: accretion.stalled,
 		mods: mod.enabled ? mod.active( 0.04 ).slice( 0, 4 ).map( m => `${m.name} ${( m.value * 100 ).toFixed( 0 )}` ) : [],
 		cues: mod.activeScenes( 0.02 ).map( c => `${c.name} ${( c.weight * 100 ).toFixed( 0 )}` ),
+		surfaces: surfaces.flatMap( s => s.influences( 0.03 ).slice( 0, 3 )
+			.map( i => `${i.preset.label} ${( i.weight * 100 ).toFixed( 0 )}` ) ),
 		zone: mod.activeZones().map( z => z.name ).join( ' + ' ),
 		scanMode: VIEW.mode,
 		scanPoints: scan.drawn,
@@ -1204,4 +1327,4 @@ frame();
 
 // Exposed for console poking during tuning.
 window.APPARITION = { solver, rig, flight, accretion, destruction, debris, dust, shred, scan, panels, quality, post,
-	TUNING, ACC, POST, SHRED, SCAN, HYDRA, VIEW, mod, applyView, copyTuning, readTuning, formatTuning };
+	TUNING, ACC, POST, SHRED, SCAN, HYDRA, VIEW, mod, surfaces, editor, applyView, copyTuning, readTuning, formatTuning };

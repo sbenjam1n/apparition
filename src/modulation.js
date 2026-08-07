@@ -38,7 +38,11 @@
 // The layering, in order, because the order is what makes it behave:
 //
 //   base      whatever the sliders say, re-read every frame
-//   scenes    blended *toward* — absolute targets, weighted by each cue's ramp
+//   surfaces  blended toward — Bencina metasurfaces, natural-neighbour weights
+//             over placed presets. This is what a *place* looks like.
+//   scenes    blended toward — absolute targets, weighted by each cue's ramp.
+//             Above surfaces, because a cue is an event and an event should be
+//             able to overrule where you happen to be standing.
 //   zones     added — spatial offsets, feathered, and they sum
 //   routes    added — source x amount, optionally gated by a zone's weight
 //
@@ -214,6 +218,7 @@ export class ModMatrix {
 		this.routes = [];
 		this.zones = [];
 		this.scenes = [];
+		this.surfaces = [];
 		this.enabled = true;
 
 		// Whatever the sliders say, captured fresh each frame *before* anything is
@@ -240,6 +245,13 @@ export class ModMatrix {
 	route( from, to, amount, curve = 'linear', via = null ) {
 
 		this.routes.push( { from, to, amount, curve, via, on: true } );
+		return this;
+
+	}
+
+	surface( ms ) {
+
+		this.surfaces.push( ms );
 		return this;
 
 	}
@@ -282,6 +294,7 @@ export class ModMatrix {
 		for ( const r of this.routes ) this._touched.add( r.to );
 		for ( const z of this.zones ) for ( const k in z.set ) this._touched.add( k );
 		for ( const sc of this.scenes ) for ( const k in sc.set ) this._touched.add( k );
+		for ( const ms of this.surfaces ) for ( const k of ms.keys ) this._touched.add( k );
 
 		for ( const path of this._touched ) {
 
@@ -331,6 +344,12 @@ export class ModMatrix {
 		// Start from the dialled value for every destination in play.
 		const acc = new Map();
 		for ( const path of this._touched ) acc.set( path, this._base.get( path ) || 0 );
+
+		// Surfaces first. Natural-neighbour weights are a partition of unity, so a
+		// surface with coverage fully determines the parameters it owns — which is
+		// the point: where you are is the ground everything else is relative to.
+		const readBase = k => this._base.get( k ) || 0;
+		for ( const ms of this.surfaces ) ms.evaluate( state.x, state.y, state.z, acc, readBase );
 
 		// Scenes: blended *toward*, in priority order. Absolute, because a cue's
 		// job is to say what the look is rather than to lean on it.
@@ -404,6 +423,21 @@ export class ModMatrix {
 
 		return this.scenes.filter( s => s.weight > threshold )
 			.sort( ( a, b ) => b.weight - a.weight );
+
+	}
+
+	// What the sliders say, which is what a metasurface preset captures. Reading
+	// the base rather than the composite is what keeps a preset a description of
+	// a *place* rather than of a moment that happened to be passing through it.
+	base( path ) {
+
+		if ( ! this._base.has( path ) ) {
+
+			const t = this._resolve( path );
+			if ( t ) this._base.set( path, t.obj[ t.key ] );
+
+		}
+		return this._base.get( path ) || 0;
 
 	}
 

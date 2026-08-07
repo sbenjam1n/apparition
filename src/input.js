@@ -26,7 +26,9 @@ const DEFAULTS = {
 	probe: [ 'KeyF' ],
 	vent: [ 'KeyR' ],
 	reset: [ 'KeyG' ],
-	copyTuning: [ 'KeyP' ]
+	copyTuning: [ 'KeyP' ],
+	// Drop a metasurface preset where you are standing.
+	capture: [ 'KeyK' ]
 };
 
 export class Input {
