@@ -798,8 +798,7 @@ const patch = {
 	to: DEST_PATHS[ 0 ],
 	amount: 0,
 	curve: 'linear',
-	patch() { addRouteGui( mod.route( patch.from, patch.to, patch.amount, patch.curve ) ); },
-	unpatchAll() { while ( mod.routes.length ) mod.unroute( mod.routes[ 0 ] ); rebuildRouteGui(); }
+	patch() { addRouteGui( mod.route( patch.from, patch.to, patch.amount, patch.curve ) ); }
 };
 
 const gNew = gRoutes.addFolder( 'patch a new one' );
@@ -828,8 +827,6 @@ fitAmount();
 // One folder per live route. `writing now` is the important row: a route whose
 // contribution you can watch move is a route you can rule in or out in a second
 // rather than by deleting it and reloading.
-const _routeFolders = [];
-
 function addRouteGui( r ) {
 
 	const q = BY_PATH.get( r.to );
@@ -842,24 +839,13 @@ function addRouteGui( r ) {
 	f.add( r, 'contribution' ).name( 'writing now' ).listen().disable();
 	f.add( { unpatch() { mod.unroute( r ); f.destroy(); } }, 'unpatch' ).name( 'unpatch' );
 	f.close();
-	_routeFolders.push( f );
 	return r;
 
 }
 
-function rebuildRouteGui() {
-
-	for ( const f of _routeFolders ) f.destroy();
-	_routeFolders.length = 0;
-	for ( const r of mod.routes ) addRouteGui( r );
-
-}
-
-gRoutes.add( patch, 'unpatchAll' ).name( 'unpatch everything' );
-
 // The starting patch, given the same folder treatment as anything patched by
 // hand. There is nothing privileged about a route that came from source.
-rebuildRouteGui();
+for ( const r of mod.routes ) addRouteGui( r );
 
 // --- metasurfaces on the panel ----------------------------------------------
 
