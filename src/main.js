@@ -31,6 +31,7 @@ import { ShredField, SHRED } from './shred.js';
 import { ScanField, SCAN } from './scan.js';
 import { PostStack, POST } from './fx.js';
 import { HYDRA } from './hydra.js';
+import { ModMatrix, CURVES } from './modulation.js';
 import { ImpactAudio } from './audio.js';
 import { Hud } from './hud.js';
 
@@ -105,6 +106,102 @@ function applyView() {
 flight.scan = scan;
 applyView();
 
+// --- the patch bay ----------------------------------------------------------
+//
+// Everything the look is made of is a destination; everything the game knows
+// about itself is a source. Routes are data, so a look is a list rather than a
+// branch in the render loop, and the same mechanism drives the feedback chain,
+// the scan and the post grade.
+
+const mod = new ModMatrix( { HYDRA, SCAN, POST, ACC, SHRED } );
+
+mod
+	.addSource( 'speed', st => st.speed / 30, { attack: 0.25, release: 0.9 } )
+	.addSource( 'burn', st => st.burn ? 1 : 0, { attack: 0.05, release: 0.35 } )
+	// How full the disc is. The one the player watches, so it should be the one
+	// the world reacts to most visibly.
+	.addSource( 'disc', st => st.saturation, { attack: 0.6, release: 1.4 } )
+	.addSource( 'draw', st => st.watts / ACC.wattScale, { attack: 0.12, release: 0.7 } )
+	.addSource( 'heat', st => st.heat / ACC.heatCeiling, { attack: 0.5, release: 2.5 } )
+	.addSource( 'intake', st => st.intake ? 1 : 0, { attack: 0.18, release: 0.6 } )
+	.addSource( 'channel', st => st.channelling ? 1 : 0, { attack: 0.06, release: 0.4 } )
+	// Transients. Short attack, long release — a hit is two frames and a raw
+	// route on it is a click, where a swell and a decay is an event.
+	.addSource( 'impact', st => Math.min( 1, st.impact / 9 ), { attack: 0.01, release: 1.6 } )
+	.addSource( 'eaten', st => st.eatenPulse, { attack: 0.01, release: 1.1 } )
+	// How much of the room near you has stopped existing. Standing in your own
+	// damage should not look like standing anywhere else.
+	.addSource( 'ruin', st => 1 - st.intactNear, { attack: 0.4, release: 2.0 } )
+	.addSource( 'dark', st => 1 - st.light, { attack: 0.8, release: 2.0 } )
+	.addSource( 'dilation', st => st.dilation, { attack: 0.15, release: 0.5 } )
+	.addSource( 'height', st => Math.max( 0, Math.min( 1, st.y / ROOM.height ) ), { attack: 0.5, release: 0.5 } )
+	// Placeholder until §38 exists. Nearest live body standing in for a threat,
+	// so the routing is real and only the definition of "enemy" is pending.
+	.addSource( 'proximity', st => st.proximity, { attack: 0.2, release: 1.0 } );
+
+// A starting patch. Every one of these is a guess to be argued with on the
+// panel, which is the point of it being a list.
+mod
+	// The faster you go, the more the loop drags — this is the one that makes
+	// speed feel like something rather than a number.
+	.route( 'speed', 'HYDRA.feedback', 0.16, 'square' )
+	.route( 'speed', 'HYDRA.zoom', 0.006, 'square' )
+	.route( 'burn', 'HYDRA.modAmount', 0.010 )
+	// Carrying mass folds the frame. The disc is the resource you watch, so it
+	// gets the biggest visual lever in the file.
+	// Calibrated by looking. At seven sides a full disc folds the brightest
+	// region of the room across the entire frame and the world disappears into a
+	// mandala — the route is right, the amount was not. Four is a fold you read
+	// as pressure rather than as a takeover, and the panel goes to sixteen.
+	.route( 'disc', 'HYDRA.kaleid', 4, 'square' )
+	.route( 'disc', 'HYDRA.colorama', 0.02 )
+	.route( 'disc', 'HYDRA.saturate', 0.25 )
+	.route( 'draw', 'HYDRA.selfModulate', 0.9, 'square' )
+	.route( 'draw', 'POST.bloomStrength', 0.35 )
+	.route( 'heat', 'HYDRA.shiftR', 0.035 )
+	.route( 'heat', 'HYDRA.chromaSplit', 0.004 )
+	// Opening the funnel pulls the whole field into it.
+	.route( 'intake', 'HYDRA.rotate', 0.055 )
+	.route( 'intake', 'HYDRA.modRotateAmount', 0.09 )
+	.route( 'channel', 'HYDRA.modScaleAmount', 0.02 )
+	.route( 'channel', 'HYDRA.live', 0.30 )
+	// Getting hit throws the loop and it takes a beat to settle.
+	.route( 'impact', 'HYDRA.modAmount', 0.030, 'root' )
+	.route( 'impact', 'HYDRA.invert', 0.35, 'square' )
+	.route( 'eaten', 'HYDRA.worldDisplace', 0.9, 'root' )
+	// Wrecked ground reads as failing resolution rather than as damage decals —
+	// §48's register, driven by the thing it should have been driven by.
+	.route( 'ruin', 'HYDRA.pixelate', 90, 'square' )
+	.route( 'ruin', 'HYDRA.posterize', 6, 'gate' )
+	.route( 'dark', 'HYDRA.thresh', 0.16 )
+	.route( 'dark', 'SCAN.glow', 0.5 )
+	.route( 'dilation', 'HYDRA.feedback', 0.25 )
+	.route( 'dilation', 'HYDRA.modSpeed', - 0.12 )
+	.route( 'height', 'HYDRA.colorama', 0.02, 'band' )
+	.route( 'proximity', 'HYDRA.repeatX', 2.5, 'square' )
+	.route( 'proximity', 'HYDRA.repeatY', 2.5, 'square' );
+
+// Location. Offsets rather than absolutes, feathered, and they sum — so the
+// corner where two overlap is a place neither of them describes on its own.
+mod
+	.zone( 'the pool', { x: 0, y: 0.4, z: 4.2, radius: 5.0, feather: 4.5, set: {
+		'HYDRA.colorama': 0.04, 'HYDRA.fieldMix': 0.5, 'HYDRA.modAmount': 0.006,
+		'SCAN.rampFloor': - 3.0
+	} } )
+	.zone( 'the piers', { x: 7.6, y: 2.6, z: - 7.0, radius: 6.0, feather: 5.0, set: {
+		'HYDRA.repeatY': 3, 'HYDRA.kaleid': 4, 'HYDRA.rotate': - 0.03
+	} } )
+	.zone( 'behind the partition', { x: - 8.0, y: 2.8, z: - 3.0, radius: 5.5, feather: 4.0, set: {
+		'HYDRA.thresh': 0.22, 'HYDRA.invert': 0.5, 'HYDRA.saturate': - 0.5,
+		'SCAN.sparkle': 0.4
+	} } );
+
+// The panel and the patch bay write the same numbers, so a drag has to become
+// the new ground rather than being stamped over by the old one.
+const modState = { x: 0, y: 0, z: 0, speed: 0, burn: false, saturation: 0, watts: 0,
+	heat: 0, intake: false, channelling: false, impact: 0, eatenPulse: 0,
+	intactNear: 1, light: 1, dilation: 0, proximity: 0 };
+
 const post = new PostStack( renderer, scene, camera );
 const audio = new ImpactAudio();
 const hud = new Hud( document.getElementById( 'hud' ), document.getElementById( 'reticle' ) );
@@ -116,6 +213,7 @@ document.getElementById( 'gate' ).addEventListener( 'click', () => audio.resume(
 
 const _camDir = new THREE.Vector3();
 const _prevViewProj = new THREE.Matrix4();
+let eatenPulse = 0;
 
 solver.onImpact = ( i, speed, x, y, z, material ) => {
 
@@ -203,6 +301,7 @@ destruction.onStateChange = ( panel, prev ) => {
 accretion.onConsume = ( kind, mass, x, y, z ) => {
 
 	audio.impact( 1.4 + Math.min( 6, mass * 0.055 ), kind, 0 );
+	eatenPulse = Math.min( 1, eatenPulse + Math.min( 1, mass * 0.008 ) );
 	// Lighter than it was: the shard burst now carries the visual, and stacking a
 	// dust plume on top of it just fogs the thing you want to watch come apart.
 	dust.puff( x, y, z, 200 + mass * 3, 0, 1, 0 );
@@ -455,6 +554,18 @@ gHydra.add( HYDRA, 'modAmount', 0, 0.06, 0.0005 ).name( 'modulate' );
 gHydra.add( HYDRA, 'modScale', 0.2, 14, 0.1 ).name( 'modulate scale' );
 gHydra.add( HYDRA, 'modSpeed', 0, 2, 0.01 ).name( 'modulate speed' );
 gHydra.add( HYDRA, 'selfModulate', 0, 3, 0.05 ).name( 'self-modulate' );
+gHydra.add( HYDRA, 'fieldMix', 0, 1, 0.02 ).name( 'osc <-> voronoi' );
+gHydra.add( HYDRA, 'modScaleAmount', - 0.1, 0.1, 0.002 ).name( 'modulateScale' );
+gHydra.add( HYDRA, 'modRotateAmount', - 0.4, 0.4, 0.005 ).name( 'modulateRotate' );
+// The biggest single lever in the file. Zero is off; three and up folds the tap
+// into that many mirrored wedges and a smear becomes a bloom.
+gHydra.add( HYDRA, 'kaleid', 0, 16, 1 ).name( 'kaleid (sides)' );
+gHydra.add( HYDRA, 'repeatX', 0, 12, 1 ).name( 'repeat x' );
+gHydra.add( HYDRA, 'repeatY', 0, 12, 1 ).name( 'repeat y' );
+gHydra.add( HYDRA, 'pixelate', 0, 400, 2 ).name( 'pixelate' );
+gHydra.add( HYDRA, 'posterize', 0, 24, 1 ).name( 'posterize' );
+gHydra.add( HYDRA, 'thresh', 0, 1, 0.01 ).name( 'thresh' );
+gHydra.add( HYDRA, 'invert', 0, 1, 0.02 ).name( 'invert' );
 gHydra.add( HYDRA, 'rotate', - 0.4, 0.4, 0.005 ).name( 'rotate / pass' );
 gHydra.add( HYDRA, 'zoom', 0.97, 1.03, 0.001 ).name( 'zoom / pass' );
 gHydra.add( HYDRA, 'colorama', - 0.15, 0.15, 0.002 ).name( 'colorama' );
@@ -464,6 +575,36 @@ gHydra.add( HYDRA, 'gain', 0.8, 1.3, 0.01 ).name( 'gain' );
 // The part that is not a screen filter: the geometry reading the loop back.
 gHydra.add( HYDRA, 'worldDisplace', 0, 3, 0.02 ).name( 'world displace (m)' );
 gHydra.add( HYDRA, 'worldTint', 0, 2, 0.02 ).name( 'world tint' );
+
+const gMod = gui.addFolder( 'Patch bay' );
+gMod.add( mod, 'enabled' ).name( 'modulation on' );
+// Any hand-drag has to become the new ground, or the captured base from before
+// the drag keeps being restored underneath and the slider appears to snap back.
+gMod.add( { rebase() { mod.rebase(); } }, 'rebase' ).name( 'take sliders as base' );
+
+const gRoutes = gMod.addFolder( 'routes' );
+for ( const r of mod.routes ) {
+
+	const f = gRoutes.addFolder( `${r.from} -> ${r.to.split( '.' )[ 1 ]}` );
+	f.add( r, 'on' ).name( 'on' );
+	f.add( r, 'amount', - Math.abs( r.amount ) * 4 - 0.001, Math.abs( r.amount ) * 4 + 0.001 ).name( 'amount' );
+	f.add( r, 'curve', Object.keys( CURVES ) ).name( 'curve' );
+	f.close();
+
+}
+gRoutes.close();
+
+const gZones = gMod.addFolder( 'zones' );
+for ( const z of mod.zones ) {
+
+	const f = gZones.addFolder( z.name );
+	f.add( z, 'on' ).name( 'on' );
+	f.add( z, 'radius', 0.5, 20, 0.5 ).name( 'radius' );
+	f.add( z, 'feather', 0, 15, 0.5 ).name( 'feather' );
+	f.close();
+
+}
+gZones.close();
 
 const gShred = gui.addFolder( 'Shards' );
 // Stretch is the whole look. At zero these are specks; the streak is what makes
@@ -573,8 +714,10 @@ const TUNE_GROUPS = [
 	[ 'solver', solver, [ 'iterations', 'beta', 'alpha', 'gamma', 'postStabilize',
 		'sleepTime', 'gravity', 'maxSubsteps', 'maxTravel', 'creepRate' ] ],
 	[ 'HYDRA', HYDRA, [ 'feedback', 'live', 'decay', 'modAmount', 'modScale', 'modSpeed',
-		'selfModulate', 'rotate', 'zoom', 'colorama', 'saturate', 'chromaSplit', 'gain',
-		'worldDisplace', 'worldTint' ] ],
+		'selfModulate', 'fieldMix', 'modScaleAmount', 'modRotateAmount',
+		'kaleid', 'repeatX', 'repeatY', 'rotate', 'zoom',
+		'colorama', 'saturate', 'chromaSplit', 'pixelate', 'posterize', 'thresh',
+		'invert', 'gain', 'worldDisplace', 'worldTint' ] ],
 	[ 'POST', POST, [ 'bloomStrength', 'bloomThreshold', 'bloomRadius',
 		'grain', 'vignette', 'scanline', 'exposure' ] ],
 	[ 'dust', dust, [ 'densityDecay' ] ]
@@ -721,7 +864,8 @@ gui.add( actions, 'relight' ).name( 'restore lighting' );
 gFlight.close();
 gCam.close();
 gScan.close();
-gHydra.open();
+gHydra.close();
+gMod.open();
 gShred.close();
 gPhys.close();
 gJoint.close();
@@ -843,6 +987,41 @@ function frame() {
 	camera.position.copy( flight.viewPosition );
 	camera.quaternion.copy( flight.viewQuaternion );
 
+	// Assemble what the world knows about itself, then let the patch bay write it
+	// into whatever it is routed to.
+	{
+		const p = flight.viewPosition;
+		modState.x = p.x; modState.y = p.y; modState.z = p.z;
+		modState.speed = flight.velocity.length();
+		modState.burn = !! state.burn;
+		modState.saturation = accretion.saturation;
+		modState.watts = accretion.watts;
+		modState.heat = accretion.heat;
+		modState.intake = !! state.intake;
+		modState.channelling = accretion.channelling;
+		modState.impact = flight.lastImpact;
+		modState.light = rig.remaining();
+		modState.dilation = dilation;
+		// How intact the room is within a few metres — cheap, and it is the only
+		// honest way to say "you are standing in what you did".
+		modState.intactNear = VIEW.mode !== 'mesh' ? scan.intact( p.x, p.y, p.z, 4.5 ) : 1;
+
+		let near = 1e9;
+		for ( let i = 0; i < solver.count; i ++ ) {
+
+			if ( solver.state[ i ] === 0 ) continue;
+			const d = Math.hypot( solver.px[ i ] - p.x, solver.py[ i ] - p.y, solver.pz[ i ] - p.z );
+			if ( d < near ) near = d;
+
+		}
+
+		modState.proximity = near > 12 ? 0 : 1 - near / 12;
+		modState.eatenPulse = eatenPulse;
+		eatenPulse *= 0.86;
+	}
+
+	mod.update( modState, dt );
+
 	post.update( dt, elapsed, { watts: accretion.watts, heat: accretion.heat, dilation } );
 
 	// Hand the world last frame's composite before drawing this one, along with
@@ -885,6 +1064,8 @@ function frame() {
 		inFunnel: accretion.inFunnel,
 		consumed: accretion.consumed,
 		stalled: accretion.stalled,
+		mods: mod.enabled ? mod.active( 0.04 ).slice( 0, 4 ).map( m => `${m.name} ${( m.value * 100 ).toFixed( 0 )}` ) : [],
+		zone: mod.activeZones().map( z => z.name ).join( ' + ' ),
 		scanMode: VIEW.mode,
 		scanPoints: scan.drawn,
 		scanEroded: scan.eroded,
@@ -913,4 +1094,4 @@ frame();
 
 // Exposed for console poking during tuning.
 window.APPARITION = { solver, rig, flight, accretion, destruction, debris, dust, shred, scan, panels, quality, post,
-	TUNING, ACC, POST, SHRED, SCAN, HYDRA, VIEW, applyView, copyTuning, readTuning, formatTuning };
+	TUNING, ACC, POST, SHRED, SCAN, HYDRA, VIEW, mod, applyView, copyTuning, readTuning, formatTuning };

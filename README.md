@@ -206,6 +206,33 @@ the room vanished inside its own trail. That is a real hydra behaviour and worth
 reaching on the sliders; it cannot be the resting state of a world you fly
 through.
 
+**The patch bay** (`modulation.js`) — hydra's syntax is
+["inspired by analog modular synthesis, in which chaining or patching a set of
+transformations together generates a visual result"](https://github.com/hydra-synth/hydra).
+The half that metaphor implies and a slider panel does not is *routing*.
+
+Every number the look is made of is a destination — the feedback chain, the
+scan's density and ramp, the post grade. Everything the game knows about itself
+is a source: speed, how full the disc is, power drawn, thermal debt, funnel open,
+channelling, impact, mass just eaten, how badly the room *near you* has been
+eroded, light remaining, dilation, height, proximity. Routes are data, so a look
+is a list rather than a branch in the render loop.
+
+| state | drives | measured |
+|---|---|---|
+| full disc | `kaleid` | 0 → 3.6 sides; the frame folds under load |
+| speed + burn | `feedback` | 0.70 → 0.84; the loop drags |
+| funnel open | `rotate` | 0.021 → 0.076; the field turns into the intake |
+| wrecked ground | `pixelate` | 0 → 121; standing in your own damage |
+
+Three properties this has that hard-wiring does not. Routes are **additive around
+the sliders**, so tuning by hand and modulating by state do not fight. Every
+source has its own **attack and release** — a hit is two frames, and a raw route
+on it clicks where separate rise and fall times make it swell and decay. And
+**zones are the same mechanism with a different address**: a region carries
+parameter *offsets* and a feather distance, so crossing a boundary cross-fades,
+and overlapping zones sum into somewhere neither describes alone.
+
 **Shards** (`shred.js`) — the ammunition is not rigid bodies. It cannot be: the
 solver caps at 640 with a contact graph behind each one, so "more debris" bought
 more cost and never bought the feeling of something being torn apart. Eight

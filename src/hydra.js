@@ -13,15 +13,27 @@
 // chain of JS at runtime; this compiles one fixed chain into GLSL with a uniform
 // per stage. The vocabulary is the small subset that produces the look:
 //
-//   src(o0)     the last frame
-//   modulate    warp one thing's sampling coordinates by another's brightness.
-//               This is the operator. Almost every tendril, curl and smear in a
-//               hydra sketch is a modulate of the feedback by a slow field.
-//   rotate      turn the feedback a little each pass — what makes smears spiral
-//   scale       push it out or pull it in, which is what makes tunnels
-//   colorama    rotate hue as it recirculates, so a white streak leaves a
-//               rainbow behind it rather than a grey one
-//   diff        difference against the live frame, which keeps edges alive
+//   src(o0)          the last frame
+//   modulate         warp one thing's sampling coordinates by another's
+//                    brightness. This is *the* operator — almost every tendril,
+//                    curl and smear in a hydra sketch is a modulate of the
+//                    feedback by a slow field.
+//   modulateScale    warp the zoom by the field rather than uniformly, which is
+//                    the difference between a tunnel and something breathing
+//   modulateRotate   same for the spiral, and where the flower shapes come from
+//   kaleid(n)        radial mirroring. One line, and the biggest single change
+//                    in the look — a smear becomes a bloom with n petals.
+//   repeat(x,y)      tile the plane, which is where lattice and grid come from
+//   rotate / scale   turn and push the tap each pass
+//   pixelate         quantise the sampling grid. §48's failing resolution, for
+//                    free and in the right register.
+//   posterize        quantise value, which is what makes a scan read as data
+//   thresh / luma    keep only what is bright, so the loop carries tendrils
+//                    rather than a wash
+//   colorama         rotate hue as it recirculates, so a white streak leaves a
+//                    rainbow behind it rather than a grey one
+//   invert / shift   per-channel inversion and offset
+//   diff             difference against the live frame, which keeps edges alive
 //
 // The important part for a game rather than a sketch: this is not only a screen
 // filter. The accumulated buffer is handed back to scan.js and shred.js as a
@@ -47,14 +59,24 @@ export const HYDRA = {
 	decay: 0.02,             // bleed toward black, so it does not saturate white
 
 	// --- the modulate -------------------------------------------------------
-	// The warp field. Two oscillators crossed with a noise term, which is the
-	// cheapest thing that reads as organic rather than as a sine.
+	// The warp field. Oscillators crossed with value noise and a voronoi term;
+	// `fieldMix` slides between them, because osc alone reads as a sine and
+	// voronoi alone reads as cells, and the interesting ground is between.
 	modAmount: 0.004,        // UV displacement per unit brightness
 	modScale: 3.1,
 	modSpeed: 0.17,
 	selfModulate: 0.35,      // how much the feedback warps *itself*
+	fieldMix: 0.45,          // 0 = pure osc, 1 = pure voronoi
+	modScaleAmount: 0.0,     // modulateScale — zoom warped by the field
+	modRotateAmount: 0.0,    // modulateRotate — spiral warped by the field
 
 	// --- the transform ------------------------------------------------------
+	// kaleid is the single biggest lever in here. Zero is off; anything from
+	// three up folds the tap into that many mirrored wedges and a smear becomes a
+	// bloom. It is most of what the reference image is.
+	kaleid: 0.0,
+	repeatX: 0.0,            // 0 = off; tiles the plane, which is where lattice
+	repeatY: 0.0,            //         and grid structure come from
 	rotate: 0.022,           // radians per pass; the spiral
 	// Exactly one is the honest default. Anything above it expands every bright
 	// pixel outward on every pass, so a single lit point becomes the whole frame
@@ -67,6 +89,14 @@ export const HYDRA = {
 	colorama: 0.012,         // hue rotation per pass
 	saturate: 1.30,
 	chromaSplit: 0.0016,     // per-channel offset in the feedback tap
+	pixelate: 0.0,           // 0 = off, else cells across the frame
+	posterize: 0.0,          // 0 = off, else value levels
+	thresh: 0.0,             // keep only what is brighter than this
+	threshTol: 0.18,
+	invert: 0.0,
+	shiftR: 0.0,             // per-channel value offset, hydra's shift()
+	shiftG: 0.0,
+	shiftB: 0.0,
 	// Under one, so the loop is contractive on its own and only stays lit where
 	// the world keeps feeding it.
 	gain: 0.97,
@@ -106,6 +136,17 @@ const FRAG = /* glsl */`
 	uniform float uSaturate;
 	uniform float uChroma;
 	uniform float uGain;
+	uniform float uFieldMix;
+	uniform float uModScaleAmt;
+	uniform float uModRotAmt;
+	uniform float uKaleid;
+	uniform vec2 uRepeat;
+	uniform float uPixelate;
+	uniform float uPosterize;
+	uniform float uThresh;
+	uniform float uThreshTol;
+	uniform float uInvert;
+	uniform vec3 uShift;
 
 	varying vec2 vUv;
 
@@ -116,11 +157,57 @@ const FRAG = /* glsl */`
 		return c * ca + cross( k, c ) * sin( a ) + k * dot( k, c ) * ( 1.0 - ca );
 	}
 
-	// osc() crossed with a cheap value-noise. The field the feedback is warped by.
+	float hash21( vec2 p ) {
+		p = fract( p * vec2( 233.34, 851.73 ) );
+		p += dot( p, p + 23.45 );
+		return fract( p.x * p.y );
+	}
+
+	// noise(): value noise, two octaves. Cheap and it reads as weather.
+	float vnoise( vec2 p ) {
+		vec2 i = floor( p ), f = fract( p );
+		f = f * f * ( 3.0 - 2.0 * f );
+		float a = hash21( i ), b = hash21( i + vec2( 1.0, 0.0 ) );
+		float c = hash21( i + vec2( 0.0, 1.0 ) ), d = hash21( i + vec2( 1.0, 1.0 ) );
+		return mix( mix( a, b, f.x ), mix( c, d, f.x ), f.y ) * 2.0 - 1.0;
+	}
+
+	// voronoi(): distance to the nearest of nine jittered cell centres. Gives the
+	// field cell walls, which is what makes a warp look like something growing
+	// rather than something wobbling.
+	float vor( vec2 p, float t ) {
+		vec2 i = floor( p ), f = fract( p );
+		float best = 8.0;
+		for ( int y = - 1; y <= 1; y ++ ) {
+			for ( int x = - 1; x <= 1; x ++ ) {
+				vec2 g = vec2( float( x ), float( y ) );
+				vec2 o = vec2( hash21( i + g ), hash21( i + g + 17.3 ) );
+				o = 0.5 + 0.5 * sin( t + 6.2831 * o );
+				best = min( best, length( g + o - f ) );
+			}
+		}
+		return best * 2.0 - 1.0;
+	}
+
+	// osc() crossed with noise and voronoi. uFieldMix slides between them.
 	float field( vec2 p, float t ) {
 		float a = sin( p.x * uModScale + t ) * cos( p.y * uModScale * 0.83 - t * 0.7 );
 		float b = sin( ( p.x + p.y ) * uModScale * 0.51 + t * 1.31 );
-		return a * 0.6 + b * 0.4;
+		float osc = a * 0.6 + b * 0.4;
+		float n = vnoise( p * uModScale * 0.5 + t * 0.4 );
+		float v = vor( p * uModScale * 0.42, t * 0.7 );
+		return mix( mix( osc, n, 0.5 ) , v, uFieldMix );
+	}
+
+	// kaleid(): fold the plane into n mirrored wedges about the centre. One of
+	// the shortest functions in hydra and the one that changes the picture most.
+	vec2 kaleid( vec2 p, float sides ) {
+		float a = atan( p.y, p.x );
+		float r = length( p );
+		float seg = 3.14159265 * 2.0 / sides;
+		a = mod( a, seg );
+		a = abs( a - seg * 0.5 );
+		return vec2( cos( a ), sin( a ) ) * r;
 	}
 
 	void main() {
@@ -131,8 +218,28 @@ const FRAG = /* glsl */`
 		// rotate() and scale(), applied to the *tap* rather than to the output.
 		// Rotating where the feedback is read from is what turns a smear into a
 		// spiral; rotating the output would just spin the picture.
-		float s = sin( uRotate ), co = cos( uRotate );
-		vec2 r = vec2( c.x * co - c.y * s, c.x * s + c.y * co ) / uZoom;
+		// pixelate() first, so everything downstream samples the quantised grid
+		// rather than being quantised after the fact.
+		if ( uPixelate > 0.5 ) {
+			vec2 cells = vec2( uPixelate, uPixelate / aspect );
+			c = ( floor( ( c + 0.5 ) * cells ) + 0.5 ) / cells - 0.5;
+		}
+
+		// kaleid() and repeat() act on the tap coordinate, before the spiral.
+		if ( uKaleid >= 2.0 ) c = kaleid( c, uKaleid );
+		if ( uRepeat.x > 0.5 ) c.x = fract( c.x * uRepeat.x + 0.5 ) - 0.5;
+		if ( uRepeat.y > 0.5 ) c.y = fract( c.y * uRepeat.y + 0.5 ) - 0.5;
+
+		// modulateRotate / modulateScale: the spiral and the zoom warped by the
+		// field instead of applied uniformly. A uniform rotate is a turntable; a
+		// modulated one is something turning at different rates in different
+		// places, which is the whole difference.
+		float mfield = field( c * 0.8, uTime * uModSpeed * 0.6 );
+		float rot = uRotate + mfield * uModRotAmt;
+		float zoom = uZoom + mfield * uModScaleAmt;
+
+		float s = sin( rot ), co = cos( rot );
+		vec2 r = vec2( c.x * co - c.y * s, c.x * s + c.y * co ) / max( 0.2, zoom );
 
 		// modulate(). The field is sampled at the tap, and the feedback's own
 		// brightness folds back into the displacement — which is the difference
@@ -158,6 +265,18 @@ const FRAG = /* glsl */`
 
 		prev = hueRotate( prev, uColorama );
 		prev = max( vec3( 0.0 ), prev * uFeedback - uDecay );
+
+		// thresh(): only what is bright enough recirculates. This is how a loop
+		// carries tendrils instead of a wash — everything dim is dropped before
+		// it can accumulate.
+		if ( uThresh > 0.001 ) {
+			float pl = dot( prev, vec3( 0.299, 0.587, 0.114 ) );
+			prev *= smoothstep( uThresh - uThreshTol, uThresh + uThreshTol, pl );
+		}
+
+		if ( uPosterize > 0.5 ) prev = floor( prev * uPosterize ) / uPosterize;
+		prev += uShift;
+		if ( uInvert > 0.001 ) prev = mix( prev, 1.0 - prev, uInvert );
 
 		vec3 live = texture2D( uLive, vUv ).rgb;
 
@@ -216,7 +335,18 @@ export class HydraChain {
 			uColorama: { value: HYDRA.colorama },
 			uSaturate: { value: HYDRA.saturate },
 			uChroma: { value: HYDRA.chromaSplit },
-			uGain: { value: HYDRA.gain }
+			uGain: { value: HYDRA.gain },
+			uFieldMix: { value: HYDRA.fieldMix },
+			uModScaleAmt: { value: HYDRA.modScaleAmount },
+			uModRotAmt: { value: HYDRA.modRotateAmount },
+			uKaleid: { value: HYDRA.kaleid },
+			uRepeat: { value: new THREE.Vector2( HYDRA.repeatX, HYDRA.repeatY ) },
+			uPixelate: { value: HYDRA.pixelate },
+			uPosterize: { value: HYDRA.posterize },
+			uThresh: { value: HYDRA.thresh },
+			uThreshTol: { value: HYDRA.threshTol },
+			uInvert: { value: HYDRA.invert },
+			uShift: { value: new THREE.Vector3() }
 		};
 
 		this.material = new THREE.ShaderMaterial( {
@@ -265,6 +395,17 @@ export class HydraChain {
 		u.uSaturate.value = HYDRA.saturate;
 		u.uChroma.value = HYDRA.chromaSplit;
 		u.uGain.value = HYDRA.gain;
+		u.uFieldMix.value = HYDRA.fieldMix;
+		u.uModScaleAmt.value = HYDRA.modScaleAmount;
+		u.uModRotAmt.value = HYDRA.modRotateAmount;
+		u.uKaleid.value = HYDRA.kaleid;
+		u.uRepeat.value.set( HYDRA.repeatX, HYDRA.repeatY );
+		u.uPixelate.value = HYDRA.pixelate;
+		u.uPosterize.value = HYDRA.posterize;
+		u.uThresh.value = HYDRA.thresh;
+		u.uThreshTol.value = HYDRA.threshTol;
+		u.uInvert.value = HYDRA.invert;
+		u.uShift.value.set( HYDRA.shiftR, HYDRA.shiftG, HYDRA.shiftB );
 
 	}
 

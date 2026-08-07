@@ -96,6 +96,8 @@ export class Hud {
 				`${data.stalled ? `   <span class="warn">FULL</span>` : '' }\n` +
 			`       ${disc}\n` +
 			`funnel <b>${data.inFunnel}</b> in draw   <b>${data.consumed}</b> eaten\n` +
+			`${data.mods && data.mods.length ? `patch  ${data.mods.join( '  ' )}\n` : '' }` +
+			`${data.zone ? `zone   <b>${data.zone}</b>\n` : '' }` +
 			`${data.scanMode !== 'mesh' ? `scan   <b>${( data.scanPoints / 1000 ).toFixed( 0 )}</b>k points  <b>${data.scanEroded}</b> gone\n` : '' }` +
 			`shards <b>${data.shards}</b> aloft` +
 				`${data.jetRate > 0 ? `   <b>${data.jetRate.toFixed( 0 )}</b>/s channelling` : '' }` +
